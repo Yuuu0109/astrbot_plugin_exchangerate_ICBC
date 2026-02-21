@@ -250,7 +250,20 @@ class ICBCExchangeRatePlugin(Star):
                 f"- {r['currency']} {type_name} {r['condition']} {r['threshold']}"
             )
 
-        yield event.plain_result("当前的监控规则:\n" + "\n".join(results))
+        cron_expr = self.data.get("cron", "0 * * * *")
+        try:
+            now = datetime.now()
+            cron = croniter.croniter(cron_expr, now)
+            next1 = cron.get_next(datetime)
+            next2 = cron.get_next(datetime)
+            interval_minutes = max(1, int((next2 - next1).total_seconds() / 60))
+        except Exception:
+            interval_minutes = 60
+
+        yield event.plain_result(
+            f"当前的监控规则 (后台约每 {interval_minutes} 分钟获取一次数据):\n"
+            + "\n".join(results)
+        )
 
     @filter.command("icbc_cron")
     async def set_cron(self, event: AstrMessageEvent, cron_expr: str):
