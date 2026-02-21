@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import ssl
 
 import aiohttp
 
@@ -18,13 +19,13 @@ DATA_FILE = os.path.join(
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.0"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.1"
 )
 class ICBCExchangeRatePlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        self.config: dict = {
-            "frequency_minutes": 30,
+        self.plugin_config = config or {}
+        self.data: dict = {
             "monitors": {},  # userId/groupId -> list of monitor rules
             # monitor rule: {"currency": "美元", "condition": "高于", "threshold": 7.2, "last_triggered": False}
         }
@@ -36,15 +37,18 @@ class ICBCExchangeRatePlugin(Star):
         try:
             if os.path.exists(DATA_FILE):
                 with open(DATA_FILE, encoding="utf-8") as f:
-                    self.config = json.load(f)
-                logger.info(f"成功加载汇率监控配置: {self.config}")
+                    file_data = json.load(f)
+                    # Support legacy save config
+                    if "monitors" in file_data:
+                        self.data["monitors"] = file_data["monitors"]
+                logger.info(f"成功加载汇率监控数据: {self.data}")
         except Exception as e:
             logger.error(f"加载汇率监控配置失败: {e}")
 
     def save_data(self):
         try:
             with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, ensure_ascii=False, indent=2)
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存汇率监控配置失败: {e}")
 
@@ -65,8 +69,13 @@ class ICBCExchangeRatePlugin(Star):
             "Origin": "https://www.icbc.com.cn",
         }
         try:
+            ssl_context = ssl.create_default_context()
+            # OP_LEGACY_SERVER_CONNECT helps mitigate UNSAFE_LEGACY_RENEGOTIATION_DISABLED
+            ssl_context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json={}) as resp:
+                async with session.post(
+                    url, headers=headers, json={}, ssl=ssl_context
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("code") == 0:
@@ -145,7 +154,7 @@ class ICBCExchangeRatePlugin(Star):
             yield event.plain_result("无法识别当前会话。")
             return
 
-        monitors = self.config.get("monitors", {})
+        monitors = self.data.get("monitors", {})
         if session_id not in monitors:
             monitors[session_id] = []
 
@@ -156,7 +165,7 @@ class ICBCExchangeRatePlugin(Star):
             "last_triggered": False,
         }
         monitors[session_id].append(rule)
-        self.config["monitors"] = monitors
+        self.data["monitors"] = monitors
         self.save_data()
 
         yield event.plain_result(
@@ -167,7 +176,7 @@ class ICBCExchangeRatePlugin(Star):
     async def remove_monitor(self, event: AstrMessageEvent, currency: str):
         """删除特定币种的汇率监控。用法: /icbc_rm 美元"""
         session_id = event.get_sender_id()
-        monitors = self.config.get("monitors", {})
+        monitors = self.data.get("monitors", {})
         if session_id not in monitors:
             yield event.plain_result("当前没有任何监控规则。")
             return
@@ -178,7 +187,7 @@ class ICBCExchangeRatePlugin(Star):
         ]
 
         if len(monitors[session_id]) < initial_len:
-            self.config["monitors"] = monitors
+            self.data["monitors"] = monitors
             self.save_data()
             yield event.plain_result(f"已删除 {currency} 的监控规则。")
         else:
@@ -188,7 +197,7 @@ class ICBCExchangeRatePlugin(Star):
     async def list_monitors(self, event: AstrMessageEvent):
         """查看当前会话的汇率监控列表。用法: /icbc_ls"""
         session_id = event.get_sender_id()
-        monitors = self.config.get("monitors", {}).get(session_id, [])
+        monitors = self.data.get("monitors", {}).get(session_id, [])
         if not monitors:
             yield event.plain_result("当前没有任何监控规则。")
             return
@@ -199,24 +208,27 @@ class ICBCExchangeRatePlugin(Star):
         ]
         yield event.plain_result("当前的监控规则:\n" + "\n".join(results))
 
-    @filter.command("icbc_freq")
-    async def set_frequency(self, event: AstrMessageEvent, freq: int):
-        """设置系统查询汇率的频率(分钟)。用法: /icbc_freq 30"""
-        if freq < 1:
-            yield event.plain_result("监控频率必须至少为1分钟。")
-            return
-
-        self.config["frequency_minutes"] = freq
-        self.save_data()
-        yield event.plain_result(f"汇率全局监控刷新频率已成功修改为 {freq} 分钟。")
+    @filter.command("icbc_help")
+    async def help_cmd(self, event: AstrMessageEvent):
+        """获取工商银行汇率监控插件的使用帮助。用法: /icbc_help"""
+        help_text = (
+            "工商银行汇率监控插件使用说明：\n"
+            "/icbc [币种名称]：实时查询指定币种的汇率（留空返回常用币种）。\n"
+            "/icbc_add [币种] [高于/低于] [数值]：添加汇率监控规则。\n"
+            "/icbc_rm [币种]：删除特定的汇率监控规则。\n"
+            "/icbc_ls：查看当前已配置的汇率监控列表。\n"
+            "/icbc_help：查看此帮助信息。\n"
+            "※ 后台实时刷新频率可通过 AstrBot 的 WebUI 进行配置。"
+        )
+        yield event.plain_result(help_text)
 
     async def monitor_loop(self):
         while True:
             try:
-                freq = self.config.get("frequency_minutes", 30)
+                freq = self.plugin_config.get("frequency_minutes", 30)
                 await asyncio.sleep(freq * 60)
 
-                monitors = self.config.get("monitors", {})
+                monitors = self.data.get("monitors", {})
                 if not monitors:
                     continue
 

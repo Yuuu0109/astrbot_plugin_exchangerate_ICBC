@@ -1,6 +1,6 @@
 name: astrbot_plugin_exchangerate_icbc
 display_name: 工行汇率监控
 desc: 通过爬虫获取工商银行实时汇率数据，实现实时查询、汇率监控及自定义配置频率功能。
-version: v1.0.0
+version: v1.0.1
 author: Yuuu0109
 repo: https://github.com/Yuuu0109/astrbot_plugin_exchangerate_ICBC

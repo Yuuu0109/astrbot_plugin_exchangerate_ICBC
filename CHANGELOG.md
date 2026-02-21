@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.1] - 2026-02-21
+### Added & Fixed
+- 采用 `_conf_schema.json` 图形化配置后台刷新频率，废弃原有的频率查询和设置指令。
+- 实现 `/icbc_help` 指令：获取帮助和指令一览。
+- 修复并跳过 `UNSAFE_LEGACY_RENEGOTIATION_DISABLED` SSL报错问题解决 API 请求失败。
+
 ## [1.0.0] - 2026-02-21
 ### Added
 - 初始版本发布。
