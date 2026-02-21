@@ -21,7 +21,7 @@ DATA_FILE = os.path.join(
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.2"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.3"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -101,7 +101,7 @@ class ICBCExchangeRatePlugin(Star):
             f"{rate_info.get('publishDate', '')} {rate_info.get('publishTime', '')}"
         )
 
-        return f"【{name}({code})】\n结汇价(银行买入): {buy}  购汇价(银行卖出): {sell}\n现钞买入: {c_buy}  现钞卖出: {c_sell}\n更新时间: {pub_time}"
+        return f"【{name}({code})】\n结汇价: {buy}  购汇价: {sell}\n现钞买入: {c_buy}  现钞卖出: {c_sell}\n更新时间: {pub_time}"
 
     @filter.command("icbc")
     async def query_rate(self, event: AstrMessageEvent, currency: str = ""):
@@ -128,7 +128,7 @@ class ICBCExchangeRatePlugin(Star):
                     buy = rate.get("foreignBuy", "N/A")
                     sell = rate.get("foreignSell", "N/A")
                     results.append(
-                        f"{rate.get('currencyCHName')}({rate.get('currencyENName')}): 结汇价(买入) {buy}, 购汇价(卖出) {sell}"
+                        f"{rate.get('currencyCHName')}({rate.get('currencyENName')}): 结汇价 {buy}, 购汇价 {sell}"
                     )
 
             summary = (
@@ -142,15 +142,15 @@ class ICBCExchangeRatePlugin(Star):
     async def add_monitor_buy(
         self, event: AstrMessageEvent, currency: str, condition: str, threshold: float
     ):
-        """添加结汇价(银行买入)监控规则。用法: /icbc_add_buy 美元 高于 7.2"""
-        await self._add_monitor_impl(event, currency, condition, threshold, "buy")
+        """添加购汇价监控规则。用法: /icbc_add_buy 美元 低于 7.0"""
+        await self._add_monitor_impl(event, currency, condition, threshold, "sell")
 
     @filter.command("icbc_add_sell")
     async def add_monitor_sell(
         self, event: AstrMessageEvent, currency: str, condition: str, threshold: float
     ):
-        """添加购汇价(银行卖出)监控规则。用法: /icbc_add_sell 美元 低于 7.0"""
-        await self._add_monitor_impl(event, currency, condition, threshold, "sell")
+        """添加结汇价监控规则。用法: /icbc_add_sell 美元 高于 7.2"""
+        await self._add_monitor_impl(event, currency, condition, threshold, "buy")
 
     async def _add_monitor_impl(
         self, event, currency, condition, threshold, price_type
@@ -179,7 +179,7 @@ class ICBCExchangeRatePlugin(Star):
         self.data["monitors"] = monitors
         self.save_data()
 
-        type_name = "结汇价(银行买入)" if price_type == "buy" else "购汇价(银行卖出)"
+        type_name = "结汇价" if price_type == "buy" else "购汇价"
         yield event.plain_result(
             f"成功添加监控: 当 {currency} {type_name} {condition} {threshold} 时将通知您。"
         )
@@ -216,9 +216,7 @@ class ICBCExchangeRatePlugin(Star):
 
         results = []
         for r in monitors:
-            type_name = (
-                "结汇价(买入)" if r.get("type", "sell") == "buy" else "购汇价(卖出)"
-            )
+            type_name = "结汇价" if r.get("type", "sell") == "buy" else "购汇价"
             results.append(
                 f"- {r['currency']} {type_name} {r['condition']} {r['threshold']}"
             )
@@ -242,7 +240,14 @@ class ICBCExchangeRatePlugin(Star):
             self.monitor_task.cancel()
             self.monitor_task = asyncio.create_task(self.monitor_loop())
 
-        yield event.plain_result(f"汇率后台监控频率已成功修改为: {cron_expr}。")
+        warnings = ""
+        fast_crons = ["*/1 ", "*/2 ", "*/3 ", "*/4 ", "*/5 "]
+        if any(f in cron_expr for f in fast_crons):
+            warnings = "\n\n⚠️ 建议：您设置的频率过快，为了避免触发银行的反爬虫机制导致获取数据失败，建议将轮询间隔设为 30 分钟或更长。"
+
+        yield event.plain_result(
+            f"汇率后台监控频率已成功修改为: {cron_expr}。{warnings}"
+        )
 
     @filter.command("icbc_help")
     async def help_cmd(self, event: AstrMessageEvent):
@@ -250,13 +255,14 @@ class ICBCExchangeRatePlugin(Star):
         help_text = (
             "工商银行汇率监控插件使用说明：\n"
             "/icbc [币种名称]：实时查询汇率。\n"
-            "/icbc_add_buy [币种] [高于/低于] [数值]：添加结汇价(银行买入)监控 rules。\n"
-            "/icbc_add_sell [币种] [高于/低于] [数值]：添加购汇价(银行卖出)监控 rules。\n"
+            "/icbc_add_buy [币种] [高于/低于] [数值]：添加购汇价监控规则。\n"
+            "/icbc_add_sell [币种] [高于/低于] [数值]：添加结汇价监控规则。\n"
             "/icbc_del [币种]：删除特定的汇率监控规则。\n"
             "/icbc_list：查看当前已配置的监控。\n"
             "/icbc_cron [cron表达式]：自定义后台监控刷新频率。\n"
             "/icbc_help：查看此帮助信息。\n\n"
             "※ Cron 表达式简易教程：\n"
+            "建议：后台轮询间隔尽量设置在 30 分钟或更长，防止过于频繁请求导致数据获取失败。\n"
             "格式: 分 时 日 月 周\n"
             "举例:\n"
             "*/30 * * * *  (每30分钟执行一次)\n"
@@ -332,9 +338,9 @@ class ICBCExchangeRatePlugin(Star):
 
                         if triggered and not rule.get("last_triggered", False):
                             type_name = (
-                                "结汇价(银行买入)"
+                                "结汇价"
                                 if rule.get("type", "sell") == "buy"
-                                else "购汇价(银行卖出)"
+                                else "购汇价"
                             )
                             messages.append(
                                 f"⚠️ 汇率预警: {target_rate['currencyCHName']} {type_name}为 {price}，已{condition}设定的阈值 {threshold}！"
