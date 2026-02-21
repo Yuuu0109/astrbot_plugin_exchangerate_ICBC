@@ -1,14 +1,30 @@
-# astrbot-plugin-helloworld
+# 工商银行汇率监控插件 (astrbot_plugin_exchangerate_icbc)
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+这是一个用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的插件，通过爬取工商银行官方实时数据来提供汇率查询和监控功能。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 功能特性
+- **实时汇率查询**：查询工商银行最新的各种外币现汇、现钞买入/卖出价。
+- **自定义汇率监控**：设置特定币种和触发条件（如：“高于”或“低于”某阈值），当汇率达到要求时，主动通过机器人通知您。
+- **监控频率配置**：允许配置后台扫描更新汇率数据的频率。
 
-# Supports
+## 安装方法
+1. 在 AstrBot 的 `data/plugins` 目录下，克隆本项目或者将其放置于此。
+2. 安装所需依赖库：
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. 启动（或重启）AstrBot 即可加载插件。
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## 指令说明
+- `/icbc [币种名称]`：实时查询指定币种（如：美元、日元）的汇率，若留空会默认返回常见币种列表。
+- `/icbc_add [币种] [条件(高于/低于)] [数值阈值]`：添加监控。例如 `/icbc_add 美元 高于 7.2`。
+- `/icbc_rm [币种]`：删除已有监控。例如 `/icbc_rm 美元`。
+- `/icbc_ls`：查看当前已配置的汇率监控项。
+- `/icbc_freq [分钟数]`：配置系统后台刷新汇率数据的间隔。默认为 30 分钟。
+
+## 注意事项
+- 本插件基于 aiohttp 实现异步爬虫。
+- 数据监控和配置会自动保存在上一层目录的 `exchangerate_icbc_data.json` 文件中，插件更新时不受影响。
+
+## 更新日志
+- 详细更新内容请查看 [CHANGELOG.md](./CHANGELOG.md)。
