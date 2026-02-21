@@ -11,6 +11,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
+from astrbot.core.star.filter.command import GreedyStr
 
 DATA_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -266,9 +267,9 @@ class ICBCExchangeRatePlugin(Star):
         )
 
     @filter.command("icbc_cron")
-    async def set_cron(self, event: AstrMessageEvent, *args: str):
+    async def set_cron(self, event: AstrMessageEvent, cron_expr: GreedyStr):
         """设置后台监控刷新频率的Cron表达式。用法: /icbc_cron 0 * * * *"""
-        cron_expr = " ".join(args).strip().strip('"').strip("'")
+        cron_expr = cron_expr.strip().strip('"').strip("'")
         if not croniter.croniter.is_valid(cron_expr):
             yield event.plain_result(
                 "Cron表达式格式不正确，请查看 /icbc_help 获取常用格式示例。"
