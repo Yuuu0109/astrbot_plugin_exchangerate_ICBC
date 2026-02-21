@@ -21,7 +21,7 @@ DATA_FILE = os.path.join(
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.3"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.4"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -143,14 +143,20 @@ class ICBCExchangeRatePlugin(Star):
         self, event: AstrMessageEvent, currency: str, condition: str, threshold: float
     ):
         """添加购汇价监控规则。用法: /icbc_add_buy 美元 低于 7.0"""
-        await self._add_monitor_impl(event, currency, condition, threshold, "sell")
+        async for res in self._add_monitor_impl(
+            event, currency, condition, threshold, "sell"
+        ):
+            yield res
 
     @filter.command("icbc_add_sell")
     async def add_monitor_sell(
         self, event: AstrMessageEvent, currency: str, condition: str, threshold: float
     ):
         """添加结汇价监控规则。用法: /icbc_add_sell 美元 高于 7.2"""
-        await self._add_monitor_impl(event, currency, condition, threshold, "buy")
+        async for res in self._add_monitor_impl(
+            event, currency, condition, threshold, "buy"
+        ):
+            yield res
 
     async def _add_monitor_impl(
         self, event, currency, condition, threshold, price_type
