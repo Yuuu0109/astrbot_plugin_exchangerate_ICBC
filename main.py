@@ -266,7 +266,7 @@ class ICBCExchangeRatePlugin(Star):
         )
 
     @filter.command("icbc_cron")
-    async def set_cron(self, event: AstrMessageEvent, *args):
+    async def set_cron(self, event: AstrMessageEvent, *args: str):
         """设置后台监控刷新频率的Cron表达式。用法: /icbc_cron 0 * * * *"""
         cron_expr = " ".join(args).strip().strip('"').strip("'")
         if not croniter.croniter.is_valid(cron_expr):
