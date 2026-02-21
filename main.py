@@ -21,13 +21,13 @@ DATA_FILE = os.path.join(
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.4"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.5"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.data: dict = {
-            "cron": "*/30 * * * *",
+            "cron": "0 * * * *",
             "monitors": {},  # userId/groupId -> list of monitor rules
         }
         self.last_rates: dict[str, dict] = {}
@@ -174,6 +174,18 @@ class ICBCExchangeRatePlugin(Star):
         if session_id not in monitors:
             monitors[session_id] = []
 
+        for rule in monitors[session_id]:
+            if (
+                rule["currency"] == currency
+                and rule["condition"] == condition
+                and rule["threshold"] == float(threshold)
+                and rule["type"] == price_type
+            ):
+                yield event.plain_result(
+                    f"检测到重复的监控规则: {currency} {condition} {threshold}，请勿重复添加。"
+                )
+                return
+
         rule = {
             "currency": currency,
             "condition": condition,
@@ -186,8 +198,19 @@ class ICBCExchangeRatePlugin(Star):
         self.save_data()
 
         type_name = "结汇价" if price_type == "buy" else "购汇价"
+
+        cron_expr = self.data.get("cron", "0 * * * *")
+        try:
+            now = datetime.now()
+            cron = croniter.croniter(cron_expr, now)
+            next1 = cron.get_next(datetime)
+            next2 = cron.get_next(datetime)
+            interval_minutes = max(1, int((next2 - next1).total_seconds() / 60))
+        except Exception:
+            interval_minutes = 60
+
         yield event.plain_result(
-            f"成功添加监控: 当 {currency} {type_name} {condition} {threshold} 时将通知您。"
+            f"成功添加监控: 当 {currency} {type_name} {condition} {threshold} 时将通知您。\n(当前后台约每 {interval_minutes} 分钟获取一次数据)"
         )
 
     @filter.command("icbc_del")
@@ -249,7 +272,7 @@ class ICBCExchangeRatePlugin(Star):
         warnings = ""
         fast_crons = ["*/1 ", "*/2 ", "*/3 ", "*/4 ", "*/5 "]
         if any(f in cron_expr for f in fast_crons):
-            warnings = "\n\n⚠️ 建议：您设置的频率过快，为了避免触发银行的反爬虫机制导致获取数据失败，建议将轮询间隔设为 30 分钟或更长。"
+            warnings = "\n\n⚠️ 建议：您设置的频率过快，为了避免触发银行的反爬虫机制导致获取数据失败，建议将轮询间隔设为 60 分钟或更长。"
 
         yield event.plain_result(
             f"汇率后台监控频率已成功修改为: {cron_expr}。{warnings}"
@@ -268,9 +291,10 @@ class ICBCExchangeRatePlugin(Star):
             "/icbc_cron [cron表达式]：自定义后台监控刷新频率。\n"
             "/icbc_help：查看此帮助信息。\n\n"
             "※ Cron 表达式简易教程：\n"
-            "建议：后台轮询间隔尽量设置在 30 分钟或更长，防止过于频繁请求导致数据获取失败。\n"
+            "建议：后台轮询间隔尽量设置在 60 分钟或更长，防止过于频繁请求导致数据获取失败。\n"
             "格式: 分 时 日 月 周\n"
             "举例:\n"
+            "0 * * * *     (每小时的第0分执行一次，约每60分钟)\n"
             "*/30 * * * *  (每30分钟执行一次)\n"
             "0 * * * *     (每小时的第0分执行一次)\n"
             "0 8 * * *     (每天早上8点执行)\n"
@@ -281,9 +305,9 @@ class ICBCExchangeRatePlugin(Star):
     async def monitor_loop(self):
         while True:
             try:
-                cron_expr = self.data.get("cron", "*/30 * * * *")
+                cron_expr = self.data.get("cron", "0 * * * *")
                 if not croniter.croniter.is_valid(cron_expr):
-                    cron_expr = "*/30 * * * *"
+                    cron_expr = "0 * * * *"
 
                 now = datetime.now()
                 cron = croniter.croniter(cron_expr, now)
