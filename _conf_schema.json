@@ -1,8 +1,0 @@
-{
-    "frequency_minutes": {
-        "title": "监控频率(分钟)",
-        "description": "监控汇率数据的后台刷新频率，默认为 30 分钟。",
-        "type": "int",
-        "default": 30
-    }
-}

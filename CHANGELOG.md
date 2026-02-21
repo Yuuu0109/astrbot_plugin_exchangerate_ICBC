@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.2] - 2026-02-21
+### Changed & Added
+- 优化了汇率显示的提示语，改为更容易理解的“结汇价(银行买入)”和“购汇价(银行卖出)”。
+- 将指令 `/icbc_ls` 替换为更通俗易懂的 `/icbc_list`。
+- 将指令 `/icbc_rm` 替换为更通俗易懂的 `/icbc_del`。
+- 将添加监控指令拆分为 `/icbc_add_buy` 和 `/icbc_add_sell` 专门监控结汇价和购汇价。
+- 采用 `/icbc_cron` 对话指令替代 GUI 设定时间，并支持完整的 cron 表达式。
+- 在 `icbc_help` 介绍中增加了简单易学的 cron 教程。
+- 移除了 WebUI 界面配置。
+
 ## [1.0.1] - 2026-02-21
 ### Added & Fixed
 - 采用 `_conf_schema.json` 图形化配置后台刷新频率，废弃原有的频率查询和设置指令。

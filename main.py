@@ -2,8 +2,10 @@ import asyncio
 import json
 import os
 import ssl
+from datetime import datetime
 
 import aiohttp
+import croniter
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -19,15 +21,14 @@ DATA_FILE = os.path.join(
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.1"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.2"
 )
 class ICBCExchangeRatePlugin(Star):
-    def __init__(self, context: Context, config: dict = None):
+    def __init__(self, context: Context):
         super().__init__(context)
-        self.plugin_config = config or {}
         self.data: dict = {
+            "cron": "*/30 * * * *",
             "monitors": {},  # userId/groupId -> list of monitor rules
-            # monitor rule: {"currency": "美元", "condition": "高于", "threshold": 7.2, "last_triggered": False}
         }
         self.last_rates: dict[str, dict] = {}
         self.monitor_task: asyncio.Task | None = None
@@ -38,9 +39,10 @@ class ICBCExchangeRatePlugin(Star):
             if os.path.exists(DATA_FILE):
                 with open(DATA_FILE, encoding="utf-8") as f:
                     file_data = json.load(f)
-                    # Support legacy save config
                     if "monitors" in file_data:
                         self.data["monitors"] = file_data["monitors"]
+                    if "cron" in file_data:
+                        self.data["cron"] = file_data["cron"]
                 logger.info(f"成功加载汇率监控数据: {self.data}")
         except Exception as e:
             logger.error(f"加载汇率监控配置失败: {e}")
@@ -99,7 +101,7 @@ class ICBCExchangeRatePlugin(Star):
             f"{rate_info.get('publishDate', '')} {rate_info.get('publishTime', '')}"
         )
 
-        return f"【{name}({code})】\n现汇买入: {buy}  现汇卖出: {sell}\n现钞买入: {c_buy}  现钞卖出: {c_sell}\n更新时间: {pub_time}"
+        return f"【{name}({code})】\n结汇价(银行买入): {buy}  购汇价(银行卖出): {sell}\n现钞买入: {c_buy}  现钞卖出: {c_sell}\n更新时间: {pub_time}"
 
     @filter.command("icbc")
     async def query_rate(self, event: AstrMessageEvent, currency: str = ""):
@@ -126,7 +128,7 @@ class ICBCExchangeRatePlugin(Star):
                     buy = rate.get("foreignBuy", "N/A")
                     sell = rate.get("foreignSell", "N/A")
                     results.append(
-                        f"{rate.get('currencyCHName')}({rate.get('currencyENName')}): 现汇买入 {buy}, 现汇卖出 {sell}"
+                        f"{rate.get('currencyCHName')}({rate.get('currencyENName')}): 结汇价(买入) {buy}, 购汇价(卖出) {sell}"
                     )
 
             summary = (
@@ -136,20 +138,28 @@ class ICBCExchangeRatePlugin(Star):
             )
             yield event.plain_result(summary)
 
-    @filter.command("icbc_add")
-    async def add_monitor(
+    @filter.command("icbc_add_buy")
+    async def add_monitor_buy(
         self, event: AstrMessageEvent, currency: str, condition: str, threshold: float
     ):
-        """添加汇率监控规则。用法: /icbc_add 美元 高于 7.2"""
+        """添加结汇价(银行买入)监控规则。用法: /icbc_add_buy 美元 高于 7.2"""
+        await self._add_monitor_impl(event, currency, condition, threshold, "buy")
+
+    @filter.command("icbc_add_sell")
+    async def add_monitor_sell(
+        self, event: AstrMessageEvent, currency: str, condition: str, threshold: float
+    ):
+        """添加购汇价(银行卖出)监控规则。用法: /icbc_add_sell 美元 低于 7.0"""
+        await self._add_monitor_impl(event, currency, condition, threshold, "sell")
+
+    async def _add_monitor_impl(
+        self, event, currency, condition, threshold, price_type
+    ):
         if condition not in ["高于", "低于"]:
-            yield event.plain_result(
-                "条件必须为 '高于' 或 '低于'。例如: /icbc_add 美元 高于 7.2"
-            )
+            yield event.plain_result("条件必须为 '高于' 或 '低于'。")
             return
 
         session_id = event.get_sender_id()
-        # 为了更好地支持群聊，我们可以取群组ID如果是在群里
-        # 如果获取不到，就用发送者ID
         if not session_id:
             yield event.plain_result("无法识别当前会话。")
             return
@@ -162,19 +172,21 @@ class ICBCExchangeRatePlugin(Star):
             "currency": currency,
             "condition": condition,
             "threshold": float(threshold),
+            "type": price_type,
             "last_triggered": False,
         }
         monitors[session_id].append(rule)
         self.data["monitors"] = monitors
         self.save_data()
 
+        type_name = "结汇价(银行买入)" if price_type == "buy" else "购汇价(银行卖出)"
         yield event.plain_result(
-            f"成功添加监控: 当 {currency} 现汇卖出价 {condition} {threshold} 时将通知您。"
+            f"成功添加监控: 当 {currency} {type_name} {condition} {threshold} 时将通知您。"
         )
 
-    @filter.command("icbc_rm")
+    @filter.command("icbc_del")
     async def remove_monitor(self, event: AstrMessageEvent, currency: str):
-        """删除特定币种的汇率监控。用法: /icbc_rm 美元"""
+        """删除特定币种的汇率监控。用法: /icbc_del 美元"""
         session_id = event.get_sender_id()
         monitors = self.data.get("monitors", {})
         if session_id not in monitors:
@@ -193,40 +205,81 @@ class ICBCExchangeRatePlugin(Star):
         else:
             yield event.plain_result(f"未找到 {currency} 的监控规则。")
 
-    @filter.command("icbc_ls")
+    @filter.command("icbc_list")
     async def list_monitors(self, event: AstrMessageEvent):
-        """查看当前会话的汇率监控列表。用法: /icbc_ls"""
+        """查看当前会话的汇率监控列表。用法: /icbc_list"""
         session_id = event.get_sender_id()
         monitors = self.data.get("monitors", {}).get(session_id, [])
         if not monitors:
             yield event.plain_result("当前没有任何监控规则。")
             return
 
-        results = [
-            f"- {r['currency']} 现汇卖出价 {r['condition']} {r['threshold']}"
-            for r in monitors
-        ]
+        results = []
+        for r in monitors:
+            type_name = (
+                "结汇价(买入)" if r.get("type", "sell") == "buy" else "购汇价(卖出)"
+            )
+            results.append(
+                f"- {r['currency']} {type_name} {r['condition']} {r['threshold']}"
+            )
+
         yield event.plain_result("当前的监控规则:\n" + "\n".join(results))
+
+    @filter.command("icbc_cron")
+    async def set_cron(self, event: AstrMessageEvent, cron_expr: str):
+        """设置后台监控刷新频率的Cron表达式。用法: /icbc_cron "*/30 * * * *\""""
+        if not croniter.croniter.is_valid(cron_expr):
+            yield event.plain_result(
+                "Cron表达式格式不正确，请查看 /icbc_help 获取常用格式示例。"
+            )
+            return
+
+        self.data["cron"] = cron_expr
+        self.save_data()
+
+        # 唤醒现有的 monitor_loop 以应用新 cron
+        if self.monitor_task:
+            self.monitor_task.cancel()
+            self.monitor_task = asyncio.create_task(self.monitor_loop())
+
+        yield event.plain_result(f"汇率后台监控频率已成功修改为: {cron_expr}。")
 
     @filter.command("icbc_help")
     async def help_cmd(self, event: AstrMessageEvent):
         """获取工商银行汇率监控插件的使用帮助。用法: /icbc_help"""
         help_text = (
             "工商银行汇率监控插件使用说明：\n"
-            "/icbc [币种名称]：实时查询指定币种的汇率（留空返回常用币种）。\n"
-            "/icbc_add [币种] [高于/低于] [数值]：添加汇率监控规则。\n"
-            "/icbc_rm [币种]：删除特定的汇率监控规则。\n"
-            "/icbc_ls：查看当前已配置的汇率监控列表。\n"
-            "/icbc_help：查看此帮助信息。\n"
-            "※ 后台实时刷新频率可通过 AstrBot 的 WebUI 进行配置。"
+            "/icbc [币种名称]：实时查询汇率。\n"
+            "/icbc_add_buy [币种] [高于/低于] [数值]：添加结汇价(银行买入)监控 rules。\n"
+            "/icbc_add_sell [币种] [高于/低于] [数值]：添加购汇价(银行卖出)监控 rules。\n"
+            "/icbc_del [币种]：删除特定的汇率监控规则。\n"
+            "/icbc_list：查看当前已配置的监控。\n"
+            "/icbc_cron [cron表达式]：自定义后台监控刷新频率。\n"
+            "/icbc_help：查看此帮助信息。\n\n"
+            "※ Cron 表达式简易教程：\n"
+            "格式: 分 时 日 月 周\n"
+            "举例:\n"
+            "*/30 * * * *  (每30分钟执行一次)\n"
+            "0 * * * *     (每小时的第0分执行一次)\n"
+            "0 8 * * *     (每天早上8点执行)\n"
+            "0 9,13,18 * * * (每天9、13、18点执行)"
         )
         yield event.plain_result(help_text)
 
     async def monitor_loop(self):
         while True:
             try:
-                freq = self.plugin_config.get("frequency_minutes", 30)
-                await asyncio.sleep(freq * 60)
+                cron_expr = self.data.get("cron", "*/30 * * * *")
+                if not croniter.croniter.is_valid(cron_expr):
+                    cron_expr = "*/30 * * * *"
+
+                now = datetime.now()
+                cron = croniter.croniter(cron_expr, now)
+                next_time = cron.get_next(datetime)
+                sleep_seconds = (next_time - now).total_seconds()
+
+                if sleep_seconds > 0:
+                    await asyncio.sleep(sleep_seconds)
 
                 monitors = self.data.get("monitors", {})
                 if not monitors:
@@ -256,24 +309,35 @@ class ICBCExchangeRatePlugin(Star):
                         if not target_rate:
                             continue
 
-                        # 获取现汇卖出价用于触发
+                        # 获取现汇价用于触发
                         try:
-                            sell_price = float(target_rate.get("foreignSell", 0))
+                            # 根据 type 获取相应价格，如果没有设置（旧版配置）默认使用 selling
+                            v = (
+                                target_rate.get("foreignBuy", 0)
+                                if rule.get("type", "sell") == "buy"
+                                else target_rate.get("foreignSell", 0)
+                            )
+                            price = float(v)
                         except ValueError:
                             continue
 
-                        if sell_price <= 0:
+                        if price <= 0:
                             continue
 
                         triggered = False
-                        if condition == "高于" and sell_price > threshold:
+                        if condition == "高于" and price > threshold:
                             triggered = True
-                        elif condition == "低于" and sell_price < threshold:
+                        elif condition == "低于" and price < threshold:
                             triggered = True
 
                         if triggered and not rule.get("last_triggered", False):
+                            type_name = (
+                                "结汇价(银行买入)"
+                                if rule.get("type", "sell") == "buy"
+                                else "购汇价(银行卖出)"
+                            )
                             messages.append(
-                                f"⚠️ 汇率预警: {target_rate['currencyCHName']} 现汇卖出价为 {sell_price}，已{condition}设定的阈值 {threshold}！"
+                                f"⚠️ 汇率预警: {target_rate['currencyCHName']} {type_name}为 {price}，已{condition}设定的阈值 {threshold}！"
                             )
                             rule["last_triggered"] = True
                             self.save_data()
