@@ -266,8 +266,9 @@ class ICBCExchangeRatePlugin(Star):
         )
 
     @filter.command("icbc_cron")
-    async def set_cron(self, event: AstrMessageEvent, cron_expr: str):
-        """设置后台监控刷新频率的Cron表达式。用法: /icbc_cron "*/30 * * * *\""""
+    async def set_cron(self, event: AstrMessageEvent, *args):
+        """设置后台监控刷新频率的Cron表达式。用法: /icbc_cron 0 * * * *"""
+        cron_expr = " ".join(args).strip().strip('"').strip("'")
         if not croniter.croniter.is_valid(cron_expr):
             yield event.plain_result(
                 "Cron表达式格式不正确，请查看 /icbc_help 获取常用格式示例。"
