@@ -22,7 +22,7 @@ DATA_FILE = os.path.join(
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.5"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.6"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -166,7 +166,7 @@ class ICBCExchangeRatePlugin(Star):
             yield event.plain_result("条件必须为 '高于' 或 '低于'。")
             return
 
-        session_id = event.get_sender_id()
+        session_id = event.unified_msg_origin
         if not session_id:
             yield event.plain_result("无法识别当前会话。")
             return
@@ -217,7 +217,7 @@ class ICBCExchangeRatePlugin(Star):
     @filter.command("icbc_del")
     async def remove_monitor(self, event: AstrMessageEvent, currency: str):
         """删除特定币种的汇率监控。用法: /icbc_del 美元"""
-        session_id = event.get_sender_id()
+        session_id = event.unified_msg_origin
         monitors = self.data.get("monitors", {})
         if session_id not in monitors:
             yield event.plain_result("当前没有任何监控规则。")
@@ -238,7 +238,7 @@ class ICBCExchangeRatePlugin(Star):
     @filter.command("icbc_list")
     async def list_monitors(self, event: AstrMessageEvent):
         """查看当前会话的汇率监控列表。用法: /icbc_list"""
-        session_id = event.get_sender_id()
+        session_id = event.unified_msg_origin
         monitors = self.data.get("monitors", {}).get(session_id, [])
         if not monitors:
             yield event.plain_result("当前没有任何监控规则。")
