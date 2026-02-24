@@ -71,25 +71,41 @@ class ICBCExchangeRatePlugin(Star):
             "Content-Type": "application/json",
             "Referer": "https://www.icbc.com.cn/column/1438058341489590354.html",
             "Origin": "https://www.icbc.com.cn",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
-        try:
-            ssl_context = ssl.create_default_context()
-            # OP_LEGACY_SERVER_CONNECT helps mitigate UNSAFE_LEGACY_RENEGOTIATION_DISABLED
-            ssl_context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url, headers=headers, json={}, ssl=ssl_context
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("code") == 0:
-                            return data.get("data", [])
+
+        ssl_context = ssl.create_default_context()
+        ssl_context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        headers=headers,
+                        json={},
+                        ssl=ssl_context,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get("code") == 0:
+                                return data.get("data", [])
+                            else:
+                                logger.error(f"API请求返回错误代码: {data}")
                         else:
-                            logger.error(f"API请求返回错误代码: {data}")
-                    else:
-                        logger.error(f"API请求失败，状态码: {resp.status}")
-        except Exception as e:
-            logger.error(f"获取汇率数据异常: {e}")
+                            logger.error(f"API请求失败，状态码: {resp.status}")
+            except Exception as e:
+                logger.warning(f"获取汇率数据异常 (第{attempt}/{max_retries}次): {e}")
+                if attempt < max_retries:
+                    await asyncio.sleep(2 * attempt)
+                else:
+                    logger.error(f"获取汇率数据失败，已重试{max_retries}次")
         return []
 
     def format_rate_info(self, rate_info: dict) -> str:
