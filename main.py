@@ -11,6 +11,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 
 DATA_FILE = os.path.join(
@@ -284,14 +285,7 @@ class ICBCExchangeRatePlugin(Star):
             self.monitor_task.cancel()
             self.monitor_task = asyncio.create_task(self.monitor_loop())
 
-        warnings = ""
-        fast_crons = ["*/1 ", "*/2 ", "*/3 ", "*/4 ", "*/5 "]
-        if any(f in cron_expr for f in fast_crons):
-            warnings = "\n\n⚠️ 建议：您设置的频率过快，为了避免触发银行的反爬虫机制导致获取数据失败，建议将轮询间隔设为 60 分钟或更长。"
-
-        yield event.plain_result(
-            f"汇率后台监控频率已成功修改为: {cron_expr}。{warnings}"
-        )
+        yield event.plain_result(f"汇率后台监控频率已成功修改为: {cron_expr}。")
 
     @filter.command("icbc_help")
     async def help_cmd(self, event: AstrMessageEvent):
@@ -311,7 +305,6 @@ class ICBCExchangeRatePlugin(Star):
             "举例:\n"
             "0 * * * *     (每小时的第0分执行一次，约每60分钟)\n"
             "*/30 * * * *  (每30分钟执行一次)\n"
-            "0 * * * *     (每小时的第0分执行一次)\n"
             "0 8 * * *     (每天早上8点执行)\n"
             "0 9,13,18 * * * (每天9、13、18点执行)"
         )
@@ -402,7 +395,9 @@ class ICBCExchangeRatePlugin(Star):
                         logger.info(f"触发推送给 {session_id}: {msg}")
                         try:
                             # 尝试使用 context 的 send_message 推送
-                            await self.context.send_message(session_id, [Plain(msg)])
+                            await self.context.send_message(
+                                session_id, MessageChain(chain=[Plain(msg)])
+                            )
                         except Exception as e:
                             logger.error(f"消息推送失败: {e}")
 
