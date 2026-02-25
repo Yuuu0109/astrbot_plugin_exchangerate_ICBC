@@ -2,14 +2,20 @@ import asyncio
 import json
 import os
 import ssl
-from datetime import datetime
+import tempfile
+from datetime import datetime, timedelta
 
 import aiohttp
 import croniter
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star, register
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
@@ -23,14 +29,17 @@ DATA_FILE = os.path.join(
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.6"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.7"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.data: dict = {
-            "cron": "0 * * * *",
+            "cron": "*/30 * * * *",
             "monitors": {},  # userId/groupId -> list of monitor rules
+            "chart_monitors": {},  # userId/groupId -> list of currency names
+            "chart_data": {},  # currency -> list of {time, buy, sell}
+            "chart_auto_send": {},  # userId/groupId -> bool
         }
         self.last_rates: dict[str, dict] = {}
         self.monitor_task: asyncio.Task | None = None
@@ -45,6 +54,12 @@ class ICBCExchangeRatePlugin(Star):
                         self.data["monitors"] = file_data["monitors"]
                     if "cron" in file_data:
                         self.data["cron"] = file_data["cron"]
+                    if "chart_monitors" in file_data:
+                        self.data["chart_monitors"] = file_data["chart_monitors"]
+                    if "chart_data" in file_data:
+                        self.data["chart_data"] = file_data["chart_data"]
+                    if "chart_auto_send" in file_data:
+                        self.data["chart_auto_send"] = file_data["chart_auto_send"]
                 logger.info(f"成功加载汇率监控数据: {self.data}")
         except Exception as e:
             logger.error(f"加载汇率监控配置失败: {e}")
@@ -217,7 +232,7 @@ class ICBCExchangeRatePlugin(Star):
 
         type_name = "结汇价" if price_type == "buy" else "购汇价"
 
-        cron_expr = self.data.get("cron", "0 * * * *")
+        cron_expr = self.data.get("cron", "*/30 * * * *")
         try:
             now = datetime.now()
             cron = croniter.croniter(cron_expr, now)
@@ -268,7 +283,7 @@ class ICBCExchangeRatePlugin(Star):
                 f"- {r['currency']} {type_name} {r['condition']} {r['threshold']}"
             )
 
-        cron_expr = self.data.get("cron", "0 * * * *")
+        cron_expr = self.data.get("cron", "*/30 * * * *")
         try:
             now = datetime.now()
             cron = croniter.croniter(cron_expr, now)
@@ -303,6 +318,305 @@ class ICBCExchangeRatePlugin(Star):
 
         yield event.plain_result(f"汇率后台监控频率已成功修改为: {cron_expr}。")
 
+    # ========== 汇率曲线追踪 ==========
+
+    @filter.command("icbc_chart_add")
+    async def chart_add(self, event: AstrMessageEvent, currency: str):
+        """添加汇率曲线追踪。用法: /icbc_chart_add 美元"""
+        session_id = event.unified_msg_origin
+        if not session_id:
+            yield event.plain_result("无法识别当前会话。")
+            return
+
+        chart_monitors = self.data.get("chart_monitors", {})
+        if session_id not in chart_monitors:
+            chart_monitors[session_id] = []
+
+        if currency in chart_monitors[session_id]:
+            yield event.plain_result(f"{currency} 已在曲线追踪列表中，无需重复添加。")
+            return
+
+        chart_monitors[session_id].append(currency)
+        self.data["chart_monitors"] = chart_monitors
+        self.save_data()
+
+        yield event.plain_result(
+            f"已添加 {currency} 到汇率曲线追踪列表。\n"
+            f"后台将定时采集数据，使用 /icbc_chart {currency} 可查看最近走势图。"
+        )
+
+    @filter.command("icbc_chart_del")
+    async def chart_del(self, event: AstrMessageEvent, currency: str):
+        """删除汇率曲线追踪。用法: /icbc_chart_del 美元"""
+        session_id = event.unified_msg_origin
+        chart_monitors = self.data.get("chart_monitors", {})
+        if (
+            session_id not in chart_monitors
+            or currency not in chart_monitors[session_id]
+        ):
+            yield event.plain_result(f"未找到 {currency} 的曲线追踪记录。")
+            return
+
+        chart_monitors[session_id].remove(currency)
+        self.data["chart_monitors"] = chart_monitors
+        self.save_data()
+        yield event.plain_result(f"已移除 {currency} 的汇率曲线追踪。")
+
+    @filter.command("icbc_chart_list")
+    async def chart_list(self, event: AstrMessageEvent):
+        """查看当前会话的汇率曲线追踪列表。用法: /icbc_chart_list"""
+        session_id = event.unified_msg_origin
+        tracked = self.data.get("chart_monitors", {}).get(session_id, [])
+        if not tracked:
+            yield event.plain_result(
+                "当前没有汇率曲线追踪，使用 /icbc_chart_add [币种] 添加。"
+            )
+            return
+
+        lines = [f"- {c}" for c in tracked]
+        chart_data = self.data.get("chart_data", {})
+        info_parts = []
+        for c in tracked:
+            count = len(chart_data.get(c, []))
+            info_parts.append(f"{c}: {count} 条数据")
+
+        auto_send = self.data.get("chart_auto_send", {}).get(session_id, False)
+        auto_status = "已开启" if auto_send else "未开启"
+
+        yield event.plain_result(
+            "当前追踪的汇率曲线：\n"
+            + "\n".join(lines)
+            + f"\n\n定时推送走势图：{auto_status}"
+            + "\n\n数据采集情况：\n"
+            + "\n".join(info_parts)
+            + "\n\n使用 /icbc_chart [币种] 查看走势图"
+        )
+
+    @filter.command("icbc_chart")
+    async def chart_view(self, event: AstrMessageEvent, currency: str):
+        """查看指定币种的汇率走势图。用法: /icbc_chart 美元"""
+        chart_data = self.data.get("chart_data", {})
+        records = chart_data.get(currency, [])
+        if not records:
+            yield event.plain_result(
+                f"暂无 {currency} 的历史数据。\n"
+                f"请先使用 /icbc_chart_add {currency} 添加追踪，等待数据采集后再试。"
+            )
+            return
+
+        chart_path = self._generate_chart(currency, records)
+        if chart_path:
+            yield event.image_result(chart_path)
+        else:
+            yield event.plain_result("图表生成失败，请稍后重试。")
+
+    @filter.command("icbc_chart_auto")
+    async def chart_auto(self, event: AstrMessageEvent, switch: str):
+        """开启/关闭定时自动推送汇率走势图。用法: /icbc_chart_auto on 或 /icbc_chart_auto off"""
+        session_id = event.unified_msg_origin
+        if not session_id:
+            yield event.plain_result("无法识别当前会话。")
+            return
+
+        if switch.lower() not in ["on", "off"]:
+            yield event.plain_result(
+                "参数错误，请使用 on 或 off。\n用法: /icbc_chart_auto on"
+            )
+            return
+
+        enabled = switch.lower() == "on"
+
+        # 检查是否有追踪的币种
+        tracked = self.data.get("chart_monitors", {}).get(session_id, [])
+        if enabled and not tracked:
+            yield event.plain_result(
+                "请先使用 /icbc_chart_add [币种] 添加追踪后再开启自动推送。"
+            )
+            return
+
+        chart_auto_send = self.data.get("chart_auto_send", {})
+        chart_auto_send[session_id] = enabled
+        self.data["chart_auto_send"] = chart_auto_send
+        self.save_data()
+
+        if enabled:
+            yield event.plain_result(
+                "已开启定时推送汇率走势图。\n"
+                "每次后台采集数据时，将自动发送追踪币种的走势图。"
+            )
+        else:
+            yield event.plain_result("已关闭定时推送汇率走势图。")
+
+    def _generate_chart(self, currency: str, records: list) -> str | None:
+        """根据历史数据生成折线图，返回图片文件路径。"""
+        try:
+            # 配置中文字体
+            plt.rcParams["font.sans-serif"] = [
+                "Microsoft YaHei",
+                "SimHei",
+                "DejaVu Sans",
+            ]
+            plt.rcParams["axes.unicode_minus"] = False
+
+            times = []
+            buy_prices = []
+            sell_prices = []
+
+            for r in records:
+                try:
+                    t = datetime.strptime(r["time"], "%Y-%m-%d %H:%M")
+                    times.append(t)
+                    buy_prices.append(float(r.get("buy", 0)))
+                    sell_prices.append(float(r.get("sell", 0)))
+                except (ValueError, KeyError):
+                    continue
+
+            if not times:
+                return None
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+
+            # 绘制结汇价和购汇价两条线
+            has_buy = any(p > 0 for p in buy_prices)
+            has_sell = any(p > 0 for p in sell_prices)
+
+            if has_buy:
+                ax.plot(
+                    times,
+                    buy_prices,
+                    marker="o",
+                    markersize=3,
+                    linewidth=1.5,
+                    label="结汇价",
+                    color="#2196F3",
+                )
+            if has_sell:
+                ax.plot(
+                    times,
+                    sell_prices,
+                    marker="s",
+                    markersize=3,
+                    linewidth=1.5,
+                    label="购汇价",
+                    color="#FF5722",
+                )
+
+            ax.set_title(f"{currency} 汇率走势", fontsize=16, fontweight="bold", pad=15)
+            ax.set_xlabel("时间", fontsize=12)
+            ax.set_ylabel("汇率", fontsize=12)
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+
+            # 格式化 X 轴时间标签
+            if len(times) > 1:
+                span = (times[-1] - times[0]).total_seconds()
+                if span > 86400:  # > 1 天
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+                else:
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+            else:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+
+            fig.autofmt_xdate(rotation=30)
+            plt.tight_layout()
+
+            # 保存到临时文件
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=".png", prefix="icbc_chart_", delete=False
+            )
+            fig.savefig(tmp.name, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            return tmp.name
+
+        except Exception as e:
+            logger.error(f"生成汇率图表失败: {e}")
+            return None
+
+    def _collect_chart_data(self, rates: list):
+        """采集追踪币种的历史数据，保留最近7天。"""
+        chart_monitors = self.data.get("chart_monitors", {})
+        # 汇总所有会话中追踪的币种（去重）
+        all_currencies = set()
+        for currencies in chart_monitors.values():
+            all_currencies.update(currencies)
+
+        if not all_currencies:
+            return
+
+        chart_data = self.data.get("chart_data", {})
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
+
+        for cur_name in all_currencies:
+            # 查找目标汇率
+            target_rate = None
+            for rate in rates:
+                if cur_name in rate.get(
+                    "currencyCHName", ""
+                ) or cur_name.upper() in rate.get("currencyENName", ""):
+                    target_rate = rate
+                    break
+
+            if not target_rate:
+                continue
+
+            try:
+                buy_price = float(target_rate.get("foreignBuy", 0))
+                sell_price = float(target_rate.get("foreignSell", 0))
+            except (ValueError, TypeError):
+                continue
+
+            record = {
+                "time": now_str,
+                "buy": buy_price,
+                "sell": sell_price,
+            }
+
+            if cur_name not in chart_data:
+                chart_data[cur_name] = []
+
+            chart_data[cur_name].append(record)
+
+            # 清理超过7天的旧数据
+            chart_data[cur_name] = [
+                r for r in chart_data[cur_name] if r.get("time", "") >= cutoff
+            ]
+
+        self.data["chart_data"] = chart_data
+        self.save_data()
+
+    async def _auto_send_charts(self):
+        """向开启了自动推送的会话发送追踪币种的走势图。"""
+        chart_auto_send = self.data.get("chart_auto_send", {})
+        chart_monitors = self.data.get("chart_monitors", {})
+        chart_data = self.data.get("chart_data", {})
+
+        for session_id, enabled in chart_auto_send.items():
+            if not enabled:
+                continue
+
+            tracked = chart_monitors.get(session_id, [])
+            if not tracked:
+                continue
+
+            for currency in tracked:
+                records = chart_data.get(currency, [])
+                if not records:
+                    continue
+
+                chart_path = self._generate_chart(currency, records)
+                if not chart_path:
+                    continue
+
+                try:
+                    await self.context.send_message(
+                        session_id,
+                        MessageChain(chain=[Image.fromFileSystem(chart_path)]),
+                    )
+                    logger.info(f"自动推送 {currency} 走势图给 {session_id}")
+                except Exception as e:
+                    logger.error(f"自动推送走势图失败 ({session_id}, {currency}): {e}")
+
     @filter.command("icbc_help")
     async def help_cmd(self, event: AstrMessageEvent):
         """获取工商银行汇率监控插件的使用帮助。用法: /icbc_help"""
@@ -312,7 +626,14 @@ class ICBCExchangeRatePlugin(Star):
             "/icbc_add_buy [币种] [高于/低于] [数值]：添加购汇价监控规则。\n"
             "/icbc_add_sell [币种] [高于/低于] [数值]：添加结汇价监控规则。\n"
             "/icbc_del [币种]：删除特定的汇率监控规则。\n"
-            "/icbc_list：查看当前已配置的监控。\n"
+            "/icbc_list：查看当前已配置的监控。\n\n"
+            "※ 汇率曲线追踪：\n"
+            "/icbc_chart_add [币种]：添加汇率曲线追踪。\n"
+            "/icbc_chart_del [币种]：删除汇率曲线追踪。\n"
+            "/icbc_chart_list：查看追踪列表和数据采集情况。\n"
+            "/icbc_chart [币种]：查看汇率走势折线图。\n"
+            "/icbc_chart_auto [on/off]：开启/关闭定时推送走势图。\n\n"
+            "※ 其他设置：\n"
             "/icbc_cron [cron表达式]：自定义后台监控刷新频率。\n"
             "/icbc_help：查看此帮助信息。\n\n"
             "※ Cron 表达式简易教程：\n"
@@ -329,9 +650,9 @@ class ICBCExchangeRatePlugin(Star):
     async def monitor_loop(self):
         while True:
             try:
-                cron_expr = self.data.get("cron", "0 * * * *")
+                cron_expr = self.data.get("cron", "*/30 * * * *")
                 if not croniter.croniter.is_valid(cron_expr):
-                    cron_expr = "0 * * * *"
+                    cron_expr = "*/30 * * * *"
 
                 now = datetime.now()
                 cron = croniter.croniter(cron_expr, now)
@@ -341,12 +662,18 @@ class ICBCExchangeRatePlugin(Star):
                 if sleep_seconds > 0:
                     await asyncio.sleep(sleep_seconds)
 
-                monitors = self.data.get("monitors", {})
-                if not monitors:
-                    continue
-
                 rates = await self.fetch_exchange_rates()
                 if not rates:
+                    continue
+
+                # 采集汇率曲线数据
+                self._collect_chart_data(rates)
+
+                # 定时推送汇率走势图
+                await self._auto_send_charts()
+
+                monitors = self.data.get("monitors", {})
+                if not monitors:
                     continue
 
                 # 遍历所有监控规则
@@ -397,7 +724,7 @@ class ICBCExchangeRatePlugin(Star):
                                 else "购汇价"
                             )
                             messages.append(
-                                f"⚠️ 汇率预警: {target_rate['currencyCHName']} {type_name}为 {price}，已{condition}设定的阈值 {threshold}！"
+                                f"汇率提醒: {target_rate['currencyCHName']} {type_name}为 {price}，已{condition}设定的阈值 {threshold}！"
                             )
                             rule["last_triggered"] = True
                             self.save_data()
