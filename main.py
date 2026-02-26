@@ -675,67 +675,60 @@ class ICBCExchangeRatePlugin(Star):
                 )
 
             # ===== 最高价 / 最低价标注 =====
+            # 先收集所有需要标注的项 (y值, 文字, 颜色)
+            price_labels: list[tuple[float, str, str]] = []
             for prices, color, has_data, label_name in [
-                (buy_prices, buy_color, has_buy, "结汇价"),
-                (sell_prices, sell_color, has_sell, "购汇价"),
+                (buy_prices, buy_color, has_buy, "结汇"),
+                (sell_prices, sell_color, has_sell, "购汇"),
             ]:
                 if not has_data:
                     continue
-                valid = [(t, p) for t, p in zip(times, prices) if p > 0]
-                if len(valid) < 2:
+                valid_p = [p for p in prices if p > 0]
+                if len(valid_p) < 2:
                     continue
-
-                valid_prices = [p for _, p in valid]
-                max_val = max(valid_prices)
-                min_val = min(valid_prices)
-
-                # 最高价和最低价相同则跳过
+                max_val = max(valid_p)
+                min_val = min(valid_p)
                 if max_val == min_val:
                     continue
+                price_labels.append((max_val, f"{label_name}高 {max_val:.4f}", color))
+                price_labels.append((min_val, f"{label_name}低 {min_val:.4f}", color))
 
-                # 最高价水平参考虚线 + 右侧文字标签
-                ax.axhline(
-                    y=max_val, color=color, linestyle=":",
-                    linewidth=0.8, alpha=0.45, zorder=1,
-                )
-                ax.text(
-                    1.01, max_val,
-                    f"▲ 高 {max_val:.4f}",
-                    transform=ax.get_yaxis_transform(),
-                    fontproperties=fp_anno,
-                    color=color,
-                    va="center", ha="left",
-                    bbox={
-                        "boxstyle": "round,pad=0.2",
-                        "facecolor": bg_color,
-                        "edgecolor": color,
-                        "alpha": 0.85,
-                        "linewidth": 0.6,
-                    },
-                    zorder=7,
-                )
+            # 按 Y 值排序，检测重叠并偏移
+            if price_labels and all_valid:
+                price_range = max(all_valid) - min(all_valid)
+                min_gap = price_range * 0.05 if price_range > 0 else 0.01
+                price_labels.sort(key=lambda x: x[0])
+                display_y = [item[0] for item in price_labels]
+                # 从下往上逐对检测，间距不足时互相推开
+                for i in range(1, len(display_y)):
+                    if display_y[i] - display_y[i - 1] < min_gap:
+                        mid = (display_y[i] + display_y[i - 1]) / 2
+                        display_y[i - 1] = mid - min_gap / 2
+                        display_y[i] = mid + min_gap / 2
 
-                # 最低价水平参考虚线 + 右侧文字标签
-                ax.axhline(
-                    y=min_val, color=color, linestyle=":",
-                    linewidth=0.8, alpha=0.45, zorder=1,
-                )
-                ax.text(
-                    1.01, min_val,
-                    f"▼ 低 {min_val:.4f}",
-                    transform=ax.get_yaxis_transform(),
-                    fontproperties=fp_anno,
-                    color=color,
-                    va="center", ha="left",
-                    bbox={
-                        "boxstyle": "round,pad=0.2",
-                        "facecolor": bg_color,
-                        "edgecolor": color,
-                        "alpha": 0.85,
-                        "linewidth": 0.6,
-                    },
-                    zorder=7,
-                )
+                for (orig_y, text, color), dy in zip(price_labels, display_y):
+                    # 水平参考虚线画在真实价格位置
+                    ax.axhline(
+                        y=orig_y, color=color, linestyle=":",
+                        linewidth=0.8, alpha=0.45, zorder=1,
+                    )
+                    # 文字标签画在偏移后位置
+                    ax.text(
+                        1.01, dy, text,
+                        transform=ax.get_yaxis_transform(),
+                        fontproperties=fp_anno,
+                        color=color,
+                        va="center", ha="left",
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "facecolor": bg_color,
+                            "edgecolor": color,
+                            "alpha": 0.85,
+                            "linewidth": 0.6,
+                        },
+                        zorder=7,
+                    )
+
 
             # 标题
             ax.set_title(
