@@ -674,6 +674,69 @@ class ICBCExchangeRatePlugin(Star):
                     alpha=0.12,
                 )
 
+            # ===== 最高价 / 最低价标注 =====
+            for prices, color, has_data, label_name in [
+                (buy_prices, buy_color, has_buy, "结汇价"),
+                (sell_prices, sell_color, has_sell, "购汇价"),
+            ]:
+                if not has_data:
+                    continue
+                valid = [(t, p) for t, p in zip(times, prices) if p > 0]
+                if len(valid) < 2:
+                    continue
+
+                valid_prices = [p for _, p in valid]
+                max_val = max(valid_prices)
+                min_val = min(valid_prices)
+
+                # 最高价和最低价相同则跳过
+                if max_val == min_val:
+                    continue
+
+                # 最高价水平参考虚线 + 右侧文字标签
+                ax.axhline(
+                    y=max_val, color=color, linestyle=":",
+                    linewidth=0.8, alpha=0.45, zorder=1,
+                )
+                ax.text(
+                    1.01, max_val,
+                    f"▲ 高 {max_val:.4f}",
+                    transform=ax.get_yaxis_transform(),
+                    fontproperties=fp_anno,
+                    color=color,
+                    va="center", ha="left",
+                    bbox={
+                        "boxstyle": "round,pad=0.2",
+                        "facecolor": bg_color,
+                        "edgecolor": color,
+                        "alpha": 0.85,
+                        "linewidth": 0.6,
+                    },
+                    zorder=7,
+                )
+
+                # 最低价水平参考虚线 + 右侧文字标签
+                ax.axhline(
+                    y=min_val, color=color, linestyle=":",
+                    linewidth=0.8, alpha=0.45, zorder=1,
+                )
+                ax.text(
+                    1.01, min_val,
+                    f"▼ 低 {min_val:.4f}",
+                    transform=ax.get_yaxis_transform(),
+                    fontproperties=fp_anno,
+                    color=color,
+                    va="center", ha="left",
+                    bbox={
+                        "boxstyle": "round,pad=0.2",
+                        "facecolor": bg_color,
+                        "edgecolor": color,
+                        "alpha": 0.85,
+                        "linewidth": 0.6,
+                    },
+                    zorder=7,
+                )
+
             # 标题
             ax.set_title(
                 f"{currency} 汇率走势",
@@ -748,8 +811,8 @@ class ICBCExchangeRatePlugin(Star):
                     change = latest - first_val
                     pct = change / first_val * 100
                     c = color_green if change >= 0 else color_red
-                    symbol = "▲" if change >= 0 else "▼"
-                    text = f"{latest:.4f}  {symbol} {abs(pct):.2f}%"
+                    symbol = "+" if change >= 0 else "-"
+                    text = f"{latest:.4f}  {symbol}{abs(pct):.2f}%"
                 else:
                     text = f"{latest:.4f}"
                     c = text_color
