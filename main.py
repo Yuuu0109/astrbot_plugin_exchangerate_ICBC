@@ -17,16 +17,10 @@ import matplotlib.pyplot as plt
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image, Plain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 
-DATA_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..",
-    "..",
-    "exchangerate_icbc_data.json",
-)
 
 
 @register(
@@ -44,12 +38,18 @@ class ICBCExchangeRatePlugin(Star):
         }
         self.last_rates: dict[str, dict] = {}
         self.monitor_task: asyncio.Task | None = None
+
+        data_dir = StarTools.get_data_dir(
+            plugin_name="astrbot_plugin_exchangerate_icbc"
+        )
+        self.data_file = os.path.join(data_dir, "exchangerate_icbc_data.json")
+
         self.load_data()
 
     def load_data(self):
         try:
-            if os.path.exists(DATA_FILE):
-                with open(DATA_FILE, encoding="utf-8") as f:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, encoding="utf-8") as f:
                     file_data = json.load(f)
                     if "monitors" in file_data:
                         self.data["monitors"] = file_data["monitors"]
@@ -61,13 +61,13 @@ class ICBCExchangeRatePlugin(Star):
                         self.data["chart_data"] = file_data["chart_data"]
                     if "chart_auto_send" in file_data:
                         self.data["chart_auto_send"] = file_data["chart_auto_send"]
-                logger.info(f"成功加载汇率监控数据: {self.data}")
+                logger.info(f"成功加载汇率监控数据: {self.data_file}")
         except Exception as e:
             logger.error(f"加载汇率监控配置失败: {e}")
 
     def save_data(self):
         try:
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
+            with open(self.data_file, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存汇率监控配置失败: {e}")
@@ -546,11 +546,11 @@ class ICBCExchangeRatePlugin(Star):
                 return fp
 
             fp_title = make_font(18, "bold")
-            fp_label = make_font(12)
-            fp_legend = make_font(11)
-            fp_tick = make_font(9)
+            fp_label = make_font(12, "bold")
+            fp_legend = make_font(11, "bold")
+            fp_tick = make_font(9, "bold")
             fp_anno = make_font(9, "bold")
-            fp_watermark = make_font(8)
+            fp_watermark = make_font(8, "bold")
 
             # 解析数据
             times, buy_prices, sell_prices = [], [], []
