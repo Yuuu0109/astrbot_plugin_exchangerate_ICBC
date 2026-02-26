@@ -11,6 +11,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.dates as mdates
+import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 
 from astrbot.api import logger
@@ -29,7 +30,7 @@ DATA_FILE = os.path.join(
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.7"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.8"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -447,21 +448,160 @@ class ICBCExchangeRatePlugin(Star):
         else:
             yield event.plain_result("已关闭定时推送汇率走势图。")
 
-    def _generate_chart(self, currency: str, records: list) -> str | None:
-        """根据历史数据生成折线图，返回图片文件路径。"""
+    def _get_font_prop(self):
+        """获取可用的中文字体 FontProperties，跨平台兼容。"""
+        if hasattr(self, "_cached_font_prop"):
+            return self._cached_font_prop
+
+        # 策略1: 按名称搜索常见中文字体
+        chinese_fonts = [
+            "Microsoft YaHei",
+            "SimHei",
+            "SimSun",
+            "PingFang SC",
+            "Hiragino Sans GB",
+            "WenQuanYi Micro Hei",
+            "WenQuanYi Zen Hei",
+            "Noto Sans CJK SC",
+            "Noto Sans SC",
+            "Source Han Sans SC",
+            "Source Han Sans CN",
+            "Droid Sans Fallback",
+            "AR PL UMing CN",
+        ]
+        for name in chinese_fonts:
+            try:
+                path = fm.findfont(
+                    fm.FontProperties(family=name), fallback_to_default=False
+                )
+                if (
+                    path
+                    and os.path.exists(path)
+                    and not path.endswith("DejaVuSans.ttf")
+                ):
+                    self._cached_font_prop = fm.FontProperties(fname=path)
+                    logger.info(f"汇率图表使用中文字体: {path}")
+                    return self._cached_font_prop
+            except Exception:
+                continue
+
+        # 策略2: 按文件名关键词搜索系统字体
+        font_keywords = [
+            "simhei",
+            "msyh",
+            "yahei",
+            "notosanscjk",
+            "notosanssc",
+            "wqy",
+            "simsun",
+            "heiti",
+            "songti",
+            "droidsans",
+            "sourcehan",
+            "pingfang",
+        ]
         try:
-            # 配置中文字体
-            plt.rcParams["font.sans-serif"] = [
-                "Microsoft YaHei",
-                "SimHei",
-                "DejaVu Sans",
+            for f in fm.findSystemFonts():
+                fname_lower = os.path.basename(f).lower()
+                if any(k in fname_lower for k in font_keywords):
+                    self._cached_font_prop = fm.FontProperties(fname=f)
+                    logger.info(f"汇率图表使用中文字体: {f}")
+                    return self._cached_font_prop
+        except Exception:
+            pass
+
+        # 策略3: 检查插件目录下的 fonts/ 文件夹
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        fonts_dir = os.path.join(plugin_dir, "fonts")
+        if os.path.isdir(fonts_dir):
+            for f in os.listdir(fonts_dir):
+                if f.lower().endswith((".ttf", ".otf", ".ttc")):
+                    path = os.path.join(fonts_dir, f)
+                    try:
+                        self._cached_font_prop = fm.FontProperties(fname=path)
+                        logger.info(f"汇率图表使用插件自带字体: {path}")
+                        return self._cached_font_prop
+                    except Exception:
+                        continue
+
+        # 策略4: 尝试自动下载开源中文字体 (Noto Sans SC)
+        try:
+            if not os.path.isdir(fonts_dir):
+                plugin_dir = os.path.dirname(os.path.abspath(__file__))
+                fonts_dir = os.path.join(plugin_dir, "fonts")
+            os.makedirs(fonts_dir, exist_ok=True)
+            font_path = os.path.join(fonts_dir, "NotoSansSC-Regular.ttf")
+
+            font_urls = [
+                "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
+                "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
+                "https://ghp.ci/https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
             ]
+
+            import urllib.request
+
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+
+            for url in font_urls:
+                try:
+                    logger.info(f"正在自动下载中文字体: {url}")
+                    req = urllib.request.Request(
+                        url,
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+                        },
+                    )
+                    with urllib.request.urlopen(
+                        req, context=ssl_ctx, timeout=30
+                    ) as resp:
+                        data = resp.read()
+                        if len(data) > 10000:
+                            with open(font_path, "wb") as f:
+                                f.write(data)
+                            self._cached_font_prop = fm.FontProperties(fname=font_path)
+                            logger.info(
+                                f"成功下载并加载中文字体: {font_path} "
+                                f"({len(data) / 1024 / 1024:.1f}MB)"
+                            )
+                            return self._cached_font_prop
+                except Exception as e:
+                    logger.warning(f"从 {url} 下载字体失败: {e}")
+                    continue
+        except Exception as e:
+            logger.warning(f"自动下载字体流程异常: {e}")
+
+        logger.warning(
+            "未找到可用的中文字体且自动下载失败，图表中文可能显示异常。\n"
+            "解决方案: 1) 安装系统中文字体 (如 apt install fonts-noto-cjk);\n"
+            "         2) 在插件 fonts/ 目录下放置中文字体文件 (.ttf/.otf)。"
+        )
+        self._cached_font_prop = fm.FontProperties()
+        return self._cached_font_prop
+
+    def _generate_chart(self, currency: str, records: list) -> str | None:
+        """根据历史数据生成高质量汇率走势图，返回图片文件路径。"""
+        try:
             plt.rcParams["axes.unicode_minus"] = False
+            font_prop = self._get_font_prop()
 
-            times = []
-            buy_prices = []
-            sell_prices = []
+            # 创建不同大小的字体副本
+            def make_font(size, weight="normal"):
+                fp = font_prop.copy()
+                fp.set_size(size)
+                fp.set_weight(weight)
+                return fp
 
+            fp_title = make_font(18, "bold")
+            fp_label = make_font(12)
+            fp_legend = make_font(11)
+            fp_tick = make_font(9)
+            fp_anno = make_font(9, "bold")
+            fp_watermark = make_font(8)
+
+            # 解析数据
+            times, buy_prices, sell_prices = [], [], []
             for r in records:
                 try:
                     t = datetime.strptime(r["time"], "%Y-%m-%d %H:%M")
@@ -474,40 +614,157 @@ class ICBCExchangeRatePlugin(Star):
             if not times:
                 return None
 
-            fig, ax = plt.subplots(figsize=(10, 5))
+            # ===== 主题配色 (GitHub Dark 风格) =====
+            bg_color = "#0d1117"
+            card_color = "#161b22"
+            text_color = "#e6edf3"
+            text_secondary = "#8b949e"
+            grid_color = "#21262d"
+            border_color = "#30363d"
+            buy_color = "#58a6ff"
+            sell_color = "#f0883e"
+            color_green = "#3fb950"
+            color_red = "#f85149"
 
-            # 绘制结汇价和购汇价两条线
+            # 创建图表
+            fig, ax = plt.subplots(figsize=(12, 6))
+            fig.set_facecolor(bg_color)
+            ax.set_facecolor(card_color)
+
+            # 边框样式
+            for spine in ax.spines.values():
+                spine.set_color(border_color)
+                spine.set_linewidth(0.8)
+
             has_buy = any(p > 0 for p in buy_prices)
             has_sell = any(p > 0 for p in sell_prices)
 
+            # 计算填充区域的底部基准
+            all_valid = [p for p in (buy_prices + sell_prices) if p > 0]
+            if all_valid:
+                price_range = max(all_valid) - min(all_valid)
+                fill_bottom = min(all_valid) - price_range * 0.05
+            else:
+                fill_bottom = 0
+
+            # 绘制结汇价
             if has_buy:
                 ax.plot(
                     times,
                     buy_prices,
-                    marker="o",
-                    markersize=3,
-                    linewidth=1.5,
+                    linewidth=2.2,
                     label="结汇价",
-                    color="#2196F3",
+                    color=buy_color,
+                    zorder=3,
+                    solid_capstyle="round",
                 )
+                ax.fill_between(
+                    times,
+                    buy_prices,
+                    fill_bottom,
+                    alpha=0.06,
+                    color=buy_color,
+                    zorder=2,
+                )
+                # 最新值标记点 (发光效果)
+                ax.scatter(
+                    [times[-1]],
+                    [buy_prices[-1]],
+                    color=buy_color,
+                    s=80,
+                    zorder=5,
+                    edgecolors="white",
+                    linewidth=1.5,
+                )
+                ax.scatter(
+                    [times[-1]],
+                    [buy_prices[-1]],
+                    color=buy_color,
+                    s=200,
+                    zorder=4,
+                    alpha=0.15,
+                )
+
+            # 绘制购汇价
             if has_sell:
                 ax.plot(
                     times,
                     sell_prices,
-                    marker="s",
-                    markersize=3,
-                    linewidth=1.5,
+                    linewidth=2.2,
                     label="购汇价",
-                    color="#FF5722",
+                    color=sell_color,
+                    zorder=3,
+                    solid_capstyle="round",
+                )
+                ax.fill_between(
+                    times,
+                    sell_prices,
+                    fill_bottom,
+                    alpha=0.06,
+                    color=sell_color,
+                    zorder=2,
+                )
+                ax.scatter(
+                    [times[-1]],
+                    [sell_prices[-1]],
+                    color=sell_color,
+                    s=80,
+                    zorder=5,
+                    edgecolors="white",
+                    linewidth=1.5,
+                )
+                ax.scatter(
+                    [times[-1]],
+                    [sell_prices[-1]],
+                    color=sell_color,
+                    s=200,
+                    zorder=4,
+                    alpha=0.15,
                 )
 
-            ax.set_title(f"{currency} 汇率走势", fontsize=16, fontweight="bold", pad=15)
-            ax.set_xlabel("时间", fontsize=12)
-            ax.set_ylabel("汇率", fontsize=12)
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
+            # 标题
+            ax.set_title(
+                f"{currency} 汇率走势",
+                fontproperties=fp_title,
+                color=text_color,
+                pad=20,
+                loc="left",
+            )
 
-            # 格式化 X 轴时间标签
+            # 轴标签
+            ax.set_xlabel(
+                "时间",
+                fontproperties=fp_label,
+                color=text_secondary,
+                labelpad=10,
+            )
+            ax.set_ylabel(
+                "汇率",
+                fontproperties=fp_label,
+                color=text_secondary,
+                labelpad=10,
+            )
+
+            # 网格
+            ax.grid(True, alpha=0.15, color=grid_color, linestyle="-", linewidth=0.5)
+            ax.set_axisbelow(True)
+
+            # 刻度样式
+            ax.tick_params(colors=text_secondary, labelsize=9, length=0)
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_fontproperties(fp_tick)
+
+            # 图例
+            ax.legend(
+                prop=fp_legend,
+                facecolor=card_color,
+                edgecolor=border_color,
+                labelcolor=text_color,
+                loc="upper left",
+                framealpha=0.9,
+            )
+
+            # X 轴时间格式
             if len(times) > 1:
                 span = (times[-1] - times[0]).total_seconds()
                 if span > 86400:  # > 1 天
@@ -518,13 +775,88 @@ class ICBCExchangeRatePlugin(Star):
                 ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
 
             fig.autofmt_xdate(rotation=30)
-            plt.tight_layout()
+
+            # 重新设置旋转后的 tick 字体
+            for label in ax.get_xticklabels():
+                label.set_fontproperties(fp_tick)
+
+            # 最新值涨跌幅标注
+            anno_offsets = [(18, 12), (18, -18)]
+            for idx, (prices, color, has_data) in enumerate(
+                [
+                    (buy_prices, buy_color, has_buy),
+                    (sell_prices, sell_color, has_sell),
+                ]
+            ):
+                if not has_data or len(prices) < 1:
+                    continue
+                latest = prices[-1]
+                first_val = prices[0]
+                if first_val > 0:
+                    change = latest - first_val
+                    pct = change / first_val * 100
+                    c = color_green if change >= 0 else color_red
+                    symbol = "▲" if change >= 0 else "▼"
+                    text = f"{latest:.4f}  {symbol} {abs(pct):.2f}%"
+                else:
+                    text = f"{latest:.4f}"
+                    c = text_color
+
+                ax.annotate(
+                    text,
+                    xy=(times[-1], latest),
+                    xytext=anno_offsets[idx],
+                    textcoords="offset points",
+                    fontproperties=fp_anno,
+                    color=c,
+                    bbox=dict(
+                        boxstyle="round,pad=0.4",
+                        facecolor=bg_color,
+                        edgecolor=c,
+                        alpha=0.95,
+                        linewidth=1.2,
+                    ),
+                    zorder=6,
+                )
+
+            # 底部数据来源水印
+            fig.text(
+                0.99,
+                0.01,
+                "数据来源: 中国工商银行",
+                fontproperties=fp_watermark,
+                color=text_secondary,
+                ha="right",
+                va="bottom",
+                alpha=0.4,
+            )
+
+            # 右上角更新时间
+            update_time = times[-1].strftime("%Y-%m-%d %H:%M") if times else ""
+            fig.text(
+                0.99,
+                0.97,
+                f"更新: {update_time}",
+                fontproperties=fp_watermark,
+                color=text_secondary,
+                ha="right",
+                va="top",
+                alpha=0.5,
+            )
+
+            plt.tight_layout(rect=[0, 0.02, 1, 0.98])
 
             # 保存到临时文件
             tmp = tempfile.NamedTemporaryFile(
                 suffix=".png", prefix="icbc_chart_", delete=False
             )
-            fig.savefig(tmp.name, dpi=150, bbox_inches="tight")
+            fig.savefig(
+                tmp.name,
+                dpi=150,
+                bbox_inches="tight",
+                facecolor=fig.get_facecolor(),
+                edgecolor="none",
+            )
             plt.close(fig)
             return tmp.name
 
