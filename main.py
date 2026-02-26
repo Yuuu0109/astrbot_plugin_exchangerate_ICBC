@@ -30,7 +30,7 @@ DATA_FILE = os.path.join(
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.8"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.9"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -524,56 +524,8 @@ class ICBCExchangeRatePlugin(Star):
                     except Exception:
                         continue
 
-        # 策略4: 尝试自动下载开源中文字体 (Noto Sans SC)
-        try:
-            if not os.path.isdir(fonts_dir):
-                plugin_dir = os.path.dirname(os.path.abspath(__file__))
-                fonts_dir = os.path.join(plugin_dir, "fonts")
-            os.makedirs(fonts_dir, exist_ok=True)
-            font_path = os.path.join(fonts_dir, "NotoSansSC-Regular.ttf")
-
-            font_urls = [
-                "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
-                "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
-                "https://ghp.ci/https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
-            ]
-
-            import urllib.request
-
-            ssl_ctx = ssl.create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
-
-            for url in font_urls:
-                try:
-                    logger.info(f"正在自动下载中文字体: {url}")
-                    req = urllib.request.Request(
-                        url,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
-                        },
-                    )
-                    with urllib.request.urlopen(
-                        req, context=ssl_ctx, timeout=30
-                    ) as resp:
-                        data = resp.read()
-                        if len(data) > 10000:
-                            with open(font_path, "wb") as f:
-                                f.write(data)
-                            self._cached_font_prop = fm.FontProperties(fname=font_path)
-                            logger.info(
-                                f"成功下载并加载中文字体: {font_path} "
-                                f"({len(data) / 1024 / 1024:.1f}MB)"
-                            )
-                            return self._cached_font_prop
-                except Exception as e:
-                    logger.warning(f"从 {url} 下载字体失败: {e}")
-                    continue
-        except Exception as e:
-            logger.warning(f"自动下载字体流程异常: {e}")
-
         logger.warning(
-            "未找到可用的中文字体且自动下载失败，图表中文可能显示异常。\n"
+            "未找到可用的中文字体，图表中文可能显示异常。\n"
             "解决方案: 1) 安装系统中文字体 (如 apt install fonts-noto-cjk);\n"
             "         2) 在插件 fonts/ 目录下放置中文字体文件 (.ttf/.otf)。"
         )
@@ -614,17 +566,17 @@ class ICBCExchangeRatePlugin(Star):
             if not times:
                 return None
 
-            # ===== 主题配色 (GitHub Dark 风格) =====
-            bg_color = "#0d1117"
-            card_color = "#161b22"
-            text_color = "#e6edf3"
-            text_secondary = "#8b949e"
-            grid_color = "#21262d"
-            border_color = "#30363d"
-            buy_color = "#58a6ff"
-            sell_color = "#f0883e"
-            color_green = "#3fb950"
-            color_red = "#f85149"
+            # ===== 主题配色 =====
+            bg_color = "#ffffff"
+            card_color = "#f8f9fa"
+            text_color = "#1a1a2e"
+            text_secondary = "#6c757d"
+            grid_color = "#e9ecef"
+            border_color = "#dee2e6"
+            buy_color = "#1976D2"
+            sell_color = "#E65100"
+            color_green = "#2e7d32"
+            color_red = "#c62828"
 
             # 创建图表
             fig, ax = plt.subplots(figsize=(12, 6))
@@ -662,7 +614,7 @@ class ICBCExchangeRatePlugin(Star):
                     times,
                     buy_prices,
                     fill_bottom,
-                    alpha=0.06,
+                    alpha=0.08,
                     color=buy_color,
                     zorder=2,
                 )
@@ -673,7 +625,7 @@ class ICBCExchangeRatePlugin(Star):
                     color=buy_color,
                     s=80,
                     zorder=5,
-                    edgecolors="white",
+                    edgecolors=bg_color,
                     linewidth=1.5,
                 )
                 ax.scatter(
@@ -682,7 +634,7 @@ class ICBCExchangeRatePlugin(Star):
                     color=buy_color,
                     s=200,
                     zorder=4,
-                    alpha=0.15,
+                    alpha=0.12,
                 )
 
             # 绘制购汇价
@@ -700,7 +652,7 @@ class ICBCExchangeRatePlugin(Star):
                     times,
                     sell_prices,
                     fill_bottom,
-                    alpha=0.06,
+                    alpha=0.08,
                     color=sell_color,
                     zorder=2,
                 )
@@ -710,7 +662,7 @@ class ICBCExchangeRatePlugin(Star):
                     color=sell_color,
                     s=80,
                     zorder=5,
-                    edgecolors="white",
+                    edgecolors=bg_color,
                     linewidth=1.5,
                 )
                 ax.scatter(
@@ -719,7 +671,7 @@ class ICBCExchangeRatePlugin(Star):
                     color=sell_color,
                     s=200,
                     zorder=4,
-                    alpha=0.15,
+                    alpha=0.12,
                 )
 
             # 标题
@@ -746,7 +698,7 @@ class ICBCExchangeRatePlugin(Star):
             )
 
             # 网格
-            ax.grid(True, alpha=0.15, color=grid_color, linestyle="-", linewidth=0.5)
+            ax.grid(True, alpha=0.6, color=grid_color, linestyle="-", linewidth=0.5)
             ax.set_axisbelow(True)
 
             # 刻度样式
@@ -757,11 +709,11 @@ class ICBCExchangeRatePlugin(Star):
             # 图例
             ax.legend(
                 prop=fp_legend,
-                facecolor=card_color,
+                facecolor=bg_color,
                 edgecolor=border_color,
                 labelcolor=text_color,
                 loc="upper left",
-                framealpha=0.9,
+                framealpha=0.95,
             )
 
             # X 轴时间格式
@@ -809,13 +761,13 @@ class ICBCExchangeRatePlugin(Star):
                     textcoords="offset points",
                     fontproperties=fp_anno,
                     color=c,
-                    bbox=dict(
-                        boxstyle="round,pad=0.4",
-                        facecolor=bg_color,
-                        edgecolor=c,
-                        alpha=0.95,
-                        linewidth=1.2,
-                    ),
+                    bbox={
+                        "boxstyle": "round,pad=0.4",
+                        "facecolor": bg_color,
+                        "edgecolor": c,
+                        "alpha": 0.95,
+                        "linewidth": 1.2,
+                    },
                     zorder=6,
                 )
 
