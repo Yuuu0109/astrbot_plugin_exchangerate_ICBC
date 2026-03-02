@@ -24,7 +24,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.11"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.12"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -35,9 +35,11 @@ class ICBCExchangeRatePlugin(Star):
             "chart_monitors": {},  # userId/groupId -> list of currency names
             "chart_data": {},  # currency -> list of {time, buy, sell}
             "chart_auto_send": {},  # userId/groupId -> bool
+            "chart_cron": "0 12 * * 1-5",  # 图表推送cron，默认工作日中午12点
         }
         self.last_rates: dict[str, dict] = {}
         self.monitor_task: asyncio.Task | None = None
+        self.chart_push_task: asyncio.Task | None = None
 
         data_dir = StarTools.get_data_dir(
             plugin_name="astrbot_plugin_exchangerate_icbc"
@@ -61,6 +63,8 @@ class ICBCExchangeRatePlugin(Star):
                         self.data["chart_data"] = file_data["chart_data"]
                     if "chart_auto_send" in file_data:
                         self.data["chart_auto_send"] = file_data["chart_auto_send"]
+                    if "chart_cron" in file_data:
+                        self.data["chart_cron"] = file_data["chart_cron"]
                 logger.info(f"成功加载汇率监控数据: {self.data_file}")
         except Exception as e:
             logger.error(f"加载汇率监控配置失败: {e}")
@@ -75,11 +79,14 @@ class ICBCExchangeRatePlugin(Star):
     async def initialize(self):
         logger.info("初始化工商银行汇率监控插件...")
         self.monitor_task = asyncio.create_task(self.monitor_loop())
+        self.chart_push_task = asyncio.create_task(self.chart_push_loop())
 
     async def terminate(self):
         logger.info("销毁工商银行汇率监控插件...")
         if self.monitor_task:
             self.monitor_task.cancel()
+        if self.chart_push_task:
+            self.chart_push_task.cancel()
 
     async def fetch_exchange_rates(self) -> list[dict]:
         url = "https://papi.icbc.com.cn/exchanges/ns/getLatest"
@@ -440,13 +447,35 @@ class ICBCExchangeRatePlugin(Star):
         self.data["chart_auto_send"] = chart_auto_send
         self.save_data()
 
+        chart_cron = self.data.get("chart_cron", "0 12 * * 1-5")
         if enabled:
             yield event.plain_result(
-                "已开启定时推送汇率走势图。\n"
-                "每次后台采集数据时，将自动发送追踪币种的走势图。"
+                f"已开启定时推送汇率走势图。\n"
+                f"当前推送频率: {chart_cron}\n"
+                f"使用 /icbc_chart_cron 可修改推送频率。"
             )
         else:
             yield event.plain_result("已关闭定时推送汇率走势图。")
+
+    @filter.command("icbc_chart_cron")
+    async def chart_cron_cmd(self, event: AstrMessageEvent, cron_expr: GreedyStr):
+        """设置走势图定时推送频率。用法: /icbc_chart_cron 0 12 * * 1-5"""
+        cron_expr = cron_expr.strip().strip('"').strip("'")
+        if not croniter.croniter.is_valid(cron_expr):
+            yield event.plain_result(
+                "Cron表达式格式不正确，请查看 /icbc_help 获取常用格式示例。"
+            )
+            return
+
+        self.data["chart_cron"] = cron_expr
+        self.save_data()
+
+        # 重启 chart_push_loop 以应用新 cron
+        if self.chart_push_task:
+            self.chart_push_task.cancel()
+            self.chart_push_task = asyncio.create_task(self.chart_push_loop())
+
+        yield event.plain_result(f"走势图定时推送频率已修改为: {cron_expr}")
 
     def _get_font_prop(self):
         """获取可用的中文字体 FontProperties，跨平台兼容。"""
@@ -1001,7 +1030,8 @@ class ICBCExchangeRatePlugin(Star):
             "/icbc_chart_del [币种]：删除汇率曲线追踪。\n"
             "/icbc_chart_list：查看追踪列表和数据采集情况。\n"
             "/icbc_chart [币种]：查看汇率走势折线图。\n"
-            "/icbc_chart_auto [on/off]：开启/关闭定时推送走势图。\n\n"
+            "/icbc_chart_auto [on/off]：开启/关闭定时推送走势图。\n"
+            "/icbc_chart_cron [cron表达式]：设置走势图推送频率（默认工作日中午12点）。\n\n"
             "※ 其他设置：\n"
             "/icbc_cron [cron表达式]：自定义后台监控刷新频率。\n"
             "/icbc_help：查看此帮助信息。\n\n"
@@ -1037,10 +1067,6 @@ class ICBCExchangeRatePlugin(Star):
 
                 # 采集汇率曲线数据（周末自动跳过采集，仅清理旧数据）
                 self._collect_chart_data(rates)
-
-                # 定时推送汇率走势图（周末不推送）
-                if datetime.now().weekday() < 5:
-                    await self._auto_send_charts()
 
                 monitors = self.data.get("monitors", {})
                 if not monitors:
@@ -1118,3 +1144,26 @@ class ICBCExchangeRatePlugin(Star):
                 break
             except Exception as e:
                 logger.error(f"汇率监控后台任务报错: {e}")
+
+    async def chart_push_loop(self):
+        """独立的图表推送后台任务，按 chart_cron 定时执行。"""
+        while True:
+            try:
+                chart_cron = self.data.get("chart_cron", "0 12 * * 1-5")
+                if not croniter.croniter.is_valid(chart_cron):
+                    chart_cron = "0 12 * * 1-5"
+
+                now = datetime.now()
+                cron = croniter.croniter(chart_cron, now)
+                next_time = cron.get_next(datetime)
+                sleep_seconds = (next_time - now).total_seconds()
+
+                if sleep_seconds > 0:
+                    await asyncio.sleep(sleep_seconds)
+
+                await self._auto_send_charts()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"图表推送后台任务报错: {e}")
