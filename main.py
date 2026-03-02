@@ -24,7 +24,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.9"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.0.11"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
