@@ -906,28 +906,9 @@ class ICBCExchangeRatePlugin(Star):
             logger.error(f"生成汇率图表失败: {e}")
             return None
 
-    @staticmethod
-    def _calc_workday_cutoff(days: int) -> str:
-        """从当前日期往回数指定个工作日，返回cutoff时间字符串。
-
-        周末（周六、周日）不计入天数，仅计算工作日。
-        """
-        now = datetime.now()
-        count = 0
-        current = now
-        while count < days:
-            current -= timedelta(days=1)
-            if current.weekday() < 5:  # 周一~周五
-                count += 1
-        return current.strftime("%Y-%m-%d %H:%M")
-
     def _collect_chart_data(self, rates: list):
-        """采集追踪币种的历史数据，保留最近7个工作日。
-
-        周六和周日不进行数据采集；清除数据时"7天"只算工作日，周末不计入。
-        """
+        """采集追踪币种的历史数据，清除超过7天的旧数据。"""
         now = datetime.now()
-        is_weekend = now.weekday() >= 5  # 5=周六, 6=周日
 
         chart_monitors = self.data.get("chart_monitors", {})
         # 汇总所有会话中追踪的币种（去重）
@@ -940,41 +921,39 @@ class ICBCExchangeRatePlugin(Star):
 
         chart_data = self.data.get("chart_data", {})
         now_str = now.strftime("%Y-%m-%d %H:%M")
-        # 往回数7个工作日作为cutoff，周末不计入
-        cutoff = self._calc_workday_cutoff(7)
+        # 往回推7天作为cutoff
+        cutoff = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
 
         for cur_name in all_currencies:
-            # 周末跳过新数据采集，但仍执行旧数据清理
-            if not is_weekend:
-                # 查找目标汇率
-                target_rate = None
-                for rate in rates:
-                    if cur_name in rate.get(
-                        "currencyCHName", ""
-                    ) or cur_name.upper() in rate.get("currencyENName", ""):
-                        target_rate = rate
-                        break
+            # 查找目标汇率
+            target_rate = None
+            for rate in rates:
+                if cur_name in rate.get(
+                    "currencyCHName", ""
+                ) or cur_name.upper() in rate.get("currencyENName", ""):
+                    target_rate = rate
+                    break
 
-                if target_rate:
-                    try:
-                        buy_price = float(target_rate.get("foreignBuy", 0))
-                        sell_price = float(target_rate.get("foreignSell", 0))
-                    except (ValueError, TypeError):
-                        buy_price = None
+            if target_rate:
+                try:
+                    buy_price = float(target_rate.get("foreignBuy", 0))
+                    sell_price = float(target_rate.get("foreignSell", 0))
+                except (ValueError, TypeError):
+                    buy_price = None
 
-                    if buy_price is not None:
-                        record = {
-                            "time": now_str,
-                            "buy": buy_price,
-                            "sell": sell_price,
-                        }
+                if buy_price is not None:
+                    record = {
+                        "time": now_str,
+                        "buy": buy_price,
+                        "sell": sell_price,
+                    }
 
-                        if cur_name not in chart_data:
-                            chart_data[cur_name] = []
+                    if cur_name not in chart_data:
+                        chart_data[cur_name] = []
 
-                        chart_data[cur_name].append(record)
+                    chart_data[cur_name].append(record)
 
-            # 清理超过7个工作日的旧数据（周末不计入天数）
+            # 清理超过7天的旧数据
             if cur_name in chart_data:
                 chart_data[cur_name] = [
                     r for r in chart_data[cur_name] if r.get("time", "") >= cutoff
@@ -1065,7 +1044,7 @@ class ICBCExchangeRatePlugin(Star):
                 if not rates:
                     continue
 
-                # 采集汇率曲线数据（周末自动跳过采集，仅清理旧数据）
+                # 采集汇率曲线数据
                 self._collect_chart_data(rates)
 
                 monitors = self.data.get("monitors", {})
