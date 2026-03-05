@@ -24,7 +24,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.1.0"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.2.0"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -37,9 +37,11 @@ class ICBCExchangeRatePlugin(Star):
             "chart_auto_send": {},  # userId/groupId -> bool
             "chart_cron": "0 12 * * 1-5",  # 图表推送cron，默认工作日中午12点
         }
-        self.last_rates: dict[str, dict] = {}
+
         self.monitor_task: asyncio.Task | None = None
         self.chart_push_task: asyncio.Task | None = None
+        self._monitor_wakeup = asyncio.Event()
+        self._chart_wakeup = asyncio.Event()
 
         data_dir = StarTools.get_data_dir(
             plugin_name="astrbot_plugin_exchangerate_icbc"
@@ -53,18 +55,7 @@ class ICBCExchangeRatePlugin(Star):
             if os.path.exists(self.data_file):
                 with open(self.data_file, encoding="utf-8") as f:
                     file_data = json.load(f)
-                    if "monitors" in file_data:
-                        self.data["monitors"] = file_data["monitors"]
-                    if "cron" in file_data:
-                        self.data["cron"] = file_data["cron"]
-                    if "chart_monitors" in file_data:
-                        self.data["chart_monitors"] = file_data["chart_monitors"]
-                    if "chart_data" in file_data:
-                        self.data["chart_data"] = file_data["chart_data"]
-                    if "chart_auto_send" in file_data:
-                        self.data["chart_auto_send"] = file_data["chart_auto_send"]
-                    if "chart_cron" in file_data:
-                        self.data["chart_cron"] = file_data["chart_cron"]
+                    self.data.update({k: v for k, v in file_data.items() if k in self.data})
                 logger.info(f"成功加载汇率监控数据: {self.data_file}")
         except Exception as e:
             logger.error(f"加载汇率监控配置失败: {e}")
@@ -131,6 +122,29 @@ class ICBCExchangeRatePlugin(Star):
                     logger.error(f"获取汇率数据失败，已重试{max_retries}次")
         return []
 
+    @staticmethod
+    def _find_rate_by_currency(rates: list, currency: str) -> dict | None:
+        """在汇率列表中查找匹配的币种，返回匹配的条目或 None。"""
+        for rate in rates:
+            if currency in rate.get(
+                "currencyCHName", ""
+            ) or currency.upper() in rate.get("currencyENName", ""):
+                return rate
+        return None
+
+    @staticmethod
+    def _get_cron_interval_minutes(cron_expr: str) -> int:
+        """根据 cron 表达式计算相邻两次执行之间的分钟数。"""
+        try:
+            now = datetime.now()
+            cron = croniter.croniter(cron_expr, now)
+            next1 = cron.get_next(datetime)
+            next2 = cron.get_next(datetime)
+            return max(1, int((next2 - next1).total_seconds() / 60))
+        except Exception:
+            return 60
+
+
     def format_rate_info(self, rate_info: dict) -> str:
         name = rate_info.get("currencyCHName", "")
         code = rate_info.get("currencyENName", "")
@@ -153,12 +167,10 @@ class ICBCExchangeRatePlugin(Star):
             return
 
         if currency:
-            for rate in rates:
-                if currency in rate.get(
-                    "currencyCHName", ""
-                ) or currency.upper() in rate.get("currencyENName", ""):
-                    yield event.plain_result(self.format_rate_info(rate))
-                    return
+            matched = self._find_rate_by_currency(rates, currency)
+            if matched:
+                yield event.plain_result(self.format_rate_info(matched))
+                return
             yield event.plain_result(f"未找到关于包含 {currency} 的汇率信息。")
         else:
             # 默认展示常见货币
@@ -211,11 +223,10 @@ class ICBCExchangeRatePlugin(Star):
             yield event.plain_result("无法识别当前会话。")
             return
 
-        monitors = self.data.get("monitors", {})
-        if session_id not in monitors:
-            monitors[session_id] = []
+        monitors = self.data.setdefault("monitors", {})
+        session_monitors = monitors.setdefault(session_id, [])
 
-        for rule in monitors[session_id]:
+        for rule in session_monitors:
             if (
                 rule["currency"] == currency
                 and rule["condition"] == condition
@@ -234,21 +245,13 @@ class ICBCExchangeRatePlugin(Star):
             "type": price_type,
             "last_triggered": False,
         }
-        monitors[session_id].append(rule)
-        self.data["monitors"] = monitors
+        session_monitors.append(rule)
         self.save_data()
 
         type_name = "结汇价" if price_type == "buy" else "购汇价"
 
         cron_expr = self.data.get("cron", "*/30 * * * *")
-        try:
-            now = datetime.now()
-            cron = croniter.croniter(cron_expr, now)
-            next1 = cron.get_next(datetime)
-            next2 = cron.get_next(datetime)
-            interval_minutes = max(1, int((next2 - next1).total_seconds() / 60))
-        except Exception:
-            interval_minutes = 60
+        interval_minutes = self._get_cron_interval_minutes(cron_expr)
 
         yield event.plain_result(
             f"成功添加监控: 当 {currency} {type_name} {condition} {threshold} 时将通知您。\n(当前后台约每 {interval_minutes} 分钟获取一次数据)"
@@ -292,14 +295,7 @@ class ICBCExchangeRatePlugin(Star):
             )
 
         cron_expr = self.data.get("cron", "*/30 * * * *")
-        try:
-            now = datetime.now()
-            cron = croniter.croniter(cron_expr, now)
-            next1 = cron.get_next(datetime)
-            next2 = cron.get_next(datetime)
-            interval_minutes = max(1, int((next2 - next1).total_seconds() / 60))
-        except Exception:
-            interval_minutes = 60
+        interval_minutes = self._get_cron_interval_minutes(cron_expr)
 
         yield event.plain_result(
             f"当前的监控规则 (后台约每 {interval_minutes} 分钟获取一次数据):\n"
@@ -320,9 +316,8 @@ class ICBCExchangeRatePlugin(Star):
         self.save_data()
 
         # 唤醒现有的 monitor_loop 以应用新 cron
-        if self.monitor_task:
-            self.monitor_task.cancel()
-            self.monitor_task = asyncio.create_task(self.monitor_loop())
+        if hasattr(self, '_monitor_wakeup'):
+            self._monitor_wakeup.set()
 
         yield event.plain_result(f"汇率后台监控频率已成功修改为: {cron_expr}。")
 
@@ -336,16 +331,14 @@ class ICBCExchangeRatePlugin(Star):
             yield event.plain_result("无法识别当前会话。")
             return
 
-        chart_monitors = self.data.get("chart_monitors", {})
-        if session_id not in chart_monitors:
-            chart_monitors[session_id] = []
+        chart_monitors = self.data.setdefault("chart_monitors", {})
+        session_monitors = chart_monitors.setdefault(session_id, [])
 
-        if currency in chart_monitors[session_id]:
+        if currency in session_monitors:
             yield event.plain_result(f"{currency} 已在曲线追踪列表中，无需重复添加。")
             return
 
-        chart_monitors[session_id].append(currency)
-        self.data["chart_monitors"] = chart_monitors
+        session_monitors.append(currency)
         self.save_data()
 
         yield event.plain_result(
@@ -470,10 +463,9 @@ class ICBCExchangeRatePlugin(Star):
         self.data["chart_cron"] = cron_expr
         self.save_data()
 
-        # 重启 chart_push_loop 以应用新 cron
-        if self.chart_push_task:
-            self.chart_push_task.cancel()
-            self.chart_push_task = asyncio.create_task(self.chart_push_loop())
+        # 唤醒现有的 chart_push_loop 以应用新 cron
+        if hasattr(self, '_chart_wakeup'):
+            self._chart_wakeup.set()
 
         yield event.plain_result(f"走势图定时推送频率已修改为: {cron_expr}")
 
@@ -628,80 +620,47 @@ class ICBCExchangeRatePlugin(Star):
             else:
                 fill_bottom = 0
 
-            # 绘制结汇价
-            if has_buy:
-                ax.plot(
-                    times,
-                    buy_prices,
-                    linewidth=2.2,
-                    label="结汇价",
-                    color=buy_color,
-                    zorder=3,
-                    solid_capstyle="round",
-                )
-                ax.fill_between(
-                    times,
-                    buy_prices,
-                    fill_bottom,
-                    alpha=0.08,
-                    color=buy_color,
-                    zorder=2,
-                )
-                # 最新值标记点 (发光效果)
-                ax.scatter(
-                    [times[-1]],
-                    [buy_prices[-1]],
-                    color=buy_color,
-                    s=80,
-                    zorder=5,
-                    edgecolors=bg_color,
-                    linewidth=1.5,
-                )
-                ax.scatter(
-                    [times[-1]],
-                    [buy_prices[-1]],
-                    color=buy_color,
-                    s=200,
-                    zorder=4,
-                    alpha=0.12,
-                )
-
-            # 绘制购汇价
-            if has_sell:
-                ax.plot(
-                    times,
-                    sell_prices,
-                    linewidth=2.2,
-                    label="购汇价",
-                    color=sell_color,
-                    zorder=3,
-                    solid_capstyle="round",
-                )
-                ax.fill_between(
-                    times,
-                    sell_prices,
-                    fill_bottom,
-                    alpha=0.08,
-                    color=sell_color,
-                    zorder=2,
-                )
-                ax.scatter(
-                    [times[-1]],
-                    [sell_prices[-1]],
-                    color=sell_color,
-                    s=80,
-                    zorder=5,
-                    edgecolors=bg_color,
-                    linewidth=1.5,
-                )
-                ax.scatter(
-                    [times[-1]],
-                    [sell_prices[-1]],
-                    color=sell_color,
-                    s=200,
-                    zorder=4,
-                    alpha=0.12,
-                )
+            # 循环绘制结汇价和购汇价区域
+            for prices, color, label, has_data in [
+                (buy_prices, buy_color, "结汇价", has_buy),
+                (sell_prices, sell_color, "购汇价", has_sell),
+            ]:
+                if has_data and prices:
+                    ax.plot(
+                        times,
+                        prices,
+                        linewidth=2.2,
+                        label=label,
+                        color=color,
+                        zorder=3,
+                        solid_capstyle="round",
+                    )
+                    ax.fill_between(
+                        times,
+                        prices,
+                        fill_bottom,
+                        alpha=0.08,
+                        color=color,
+                        zorder=2,
+                    )
+                    # 最新值标记点 (发光效果)
+                    ax.scatter(
+                        [times[-1]],
+                        [prices[-1]],
+                        color=color,
+                        s=80,
+                        zorder=5,
+                        edgecolors=bg_color,
+                        linewidth=1.5,
+                    )
+                    ax.scatter(
+                        [times[-1]],
+                        [prices[-1]],
+                        color=color,
+                        s=200,
+                        zorder=4,
+                        alpha=0.12,
+                    )
 
             # ===== 最高价 / 最低价标注 =====
             for prices, color, has_data in [
@@ -916,48 +875,42 @@ class ICBCExchangeRatePlugin(Star):
         for currencies in chart_monitors.values():
             all_currencies.update(currencies)
 
-        if not all_currencies:
-            return
-
         chart_data = self.data.get("chart_data", {})
         now_str = now.strftime("%Y-%m-%d %H:%M")
-        # 往回推7天作为cutoff
-        cutoff = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
 
+        # 采集新数据
         for cur_name in all_currencies:
-            # 查找目标汇率
-            target_rate = None
-            for rate in rates:
-                if cur_name in rate.get(
-                    "currencyCHName", ""
-                ) or cur_name.upper() in rate.get("currencyENName", ""):
-                    target_rate = rate
-                    break
+            target_rate = self._find_rate_by_currency(rates, cur_name)
+            if not target_rate:
+                continue
 
-            if target_rate:
-                try:
-                    buy_price = float(target_rate.get("foreignBuy", 0))
-                    sell_price = float(target_rate.get("foreignSell", 0))
-                except (ValueError, TypeError):
-                    buy_price = None
+            try:
+                buy_price = float(target_rate.get("foreignBuy", 0))
+                sell_price = float(target_rate.get("foreignSell", 0))
+            except (ValueError, TypeError):
+                continue
 
-                if buy_price is not None:
-                    record = {
-                        "time": now_str,
-                        "buy": buy_price,
-                        "sell": sell_price,
-                    }
+            record = {
+                "time": now_str,
+                "buy": buy_price,
+                "sell": sell_price,
+            }
 
-                    if cur_name not in chart_data:
-                        chart_data[cur_name] = []
+            chart_data.setdefault(cur_name, []).append(record)
 
-                    chart_data[cur_name].append(record)
-
-            # 清理超过7天的旧数据
-            if cur_name in chart_data:
-                chart_data[cur_name] = [
-                    r for r in chart_data[cur_name] if r.get("time", "") >= cutoff
-                ]
+        # 清理超期数据：遍历 chart_data 所有 key（而非仅 all_currencies），
+        # 避免已取消追踪的币种数据残留导致存储泄漏
+        cutoff = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
+        stale_keys = []
+        for cur_name in list(chart_data.keys()):
+            chart_data[cur_name] = [
+                r for r in chart_data[cur_name] if r.get("time", "") >= cutoff
+            ]
+            # 如果清理后为空且已不在追踪列表中，则直接删除该 key
+            if not chart_data[cur_name] and cur_name not in all_currencies:
+                stale_keys.append(cur_name)
+        for key in stale_keys:
+            del chart_data[key]
 
         self.data["chart_data"] = chart_data
         self.save_data()
@@ -1025,9 +978,83 @@ class ICBCExchangeRatePlugin(Star):
         )
         yield event.plain_result(help_text)
 
+    # 监控类型 -> (价格字段, 中文名) 的映射
+    _PRICE_TYPE_MAP = {
+        "buy": ("foreignBuy", "结汇价"),
+        "sell": ("foreignSell", "购汇价"),
+    }
+
     async def monitor_loop(self):
         while True:
             try:
+                rates = await self.fetch_exchange_rates()
+
+                if rates:
+                    # 采集汇率曲线数据
+                    self._collect_chart_data(rates)
+
+                    monitors = self.data.get("monitors", {})
+                    if monitors:
+                        # 使用标记位，避免在内层循环中多次调用 save_data()
+                        is_changed = False
+
+                        # 遍历所有监控规则
+                        for session_id, rules in monitors.items():
+                            messages = []
+                            for rule in rules:
+                                cur_name = rule["currency"]
+                                condition = rule["condition"]
+                                threshold = rule["threshold"]
+                                price_type = rule.get("type", "sell")
+
+                                target_rate = self._find_rate_by_currency(rates, cur_name)
+                                if not target_rate:
+                                    continue
+
+                                # 使用映射获取价格字段和中文名
+                                field_key, type_name = self._PRICE_TYPE_MAP.get(
+                                    price_type, ("foreignSell", "购汇价")
+                                )
+
+                                try:
+                                    price = float(target_rate.get(field_key, 0))
+                                except ValueError:
+                                    continue
+
+                                if price <= 0:
+                                    continue
+
+                                triggered = (
+                                    (condition == "高于" and price > threshold)
+                                    or (condition == "低于" and price < threshold)
+                                )
+
+                                if triggered and not rule.get("last_triggered", False):
+                                    messages.append(
+                                        f"汇率提醒: {target_rate['currencyCHName']} {type_name}为 {price}，已{condition}设定的阈值 {threshold}！"
+                                    )
+                                    rule["last_triggered"] = True
+                                    is_changed = True
+                                elif not triggered and rule.get("last_triggered", False):
+                                    # 汇率回落/升回，重置触发状态
+                                    rule["last_triggered"] = False
+                                    is_changed = True
+
+                            # 推送通知
+                            for msg in messages:
+                                logger.info(f"触发推送给 {session_id}: {msg}")
+                                try:
+                                    await self.context.send_message(
+                                        session_id, MessageChain(chain=[Plain(msg)])
+                                    )
+                                except Exception as e:
+                                    logger.error(f"消息推送失败: {e}")
+
+                        # 所有规则遍历完毕后统一保存一次
+                        if is_changed:
+                            self.save_data()
+
+                # 无论 rates/monitors 是否为空，都必须执行休眠
                 cron_expr = self.data.get("cron", "*/30 * * * *")
                 if not croniter.croniter.is_valid(cron_expr):
                     cron_expr = "*/30 * * * *"
@@ -1038,96 +1065,27 @@ class ICBCExchangeRatePlugin(Star):
                 sleep_seconds = (next_time - now).total_seconds()
 
                 if sleep_seconds > 0:
-                    await asyncio.sleep(sleep_seconds)
-
-                rates = await self.fetch_exchange_rates()
-                if not rates:
-                    continue
-
-                # 采集汇率曲线数据
-                self._collect_chart_data(rates)
-
-                monitors = self.data.get("monitors", {})
-                if not monitors:
-                    continue
-
-                # 遍历所有监控规则
-                for session_id, rules in monitors.items():
-                    messages = []
-                    for rule in rules:
-                        cur_name = rule["currency"]
-                        condition = rule["condition"]
-                        threshold = rule["threshold"]
-
-                        # 查找目标汇率
-                        target_rate = None
-                        for rate in rates:
-                            if cur_name in rate.get(
-                                "currencyCHName", ""
-                            ) or cur_name.upper() in rate.get("currencyENName", ""):
-                                target_rate = rate
-                                break
-
-                        if not target_rate:
-                            continue
-
-                        # 获取现汇价用于触发
+                    if hasattr(self, '_monitor_wakeup'):
                         try:
-                            # 根据 type 获取相应价格，如果没有设置（旧版配置）默认使用 selling
-                            v = (
-                                target_rate.get("foreignBuy", 0)
-                                if rule.get("type", "sell") == "buy"
-                                else target_rate.get("foreignSell", 0)
-                            )
-                            price = float(v)
-                        except ValueError:
-                            continue
-
-                        if price <= 0:
-                            continue
-
-                        triggered = False
-                        if condition == "高于" and price > threshold:
-                            triggered = True
-                        elif condition == "低于" and price < threshold:
-                            triggered = True
-
-                        if triggered and not rule.get("last_triggered", False):
-                            type_name = (
-                                "结汇价"
-                                if rule.get("type", "sell") == "buy"
-                                else "购汇价"
-                            )
-                            messages.append(
-                                f"汇率提醒: {target_rate['currencyCHName']} {type_name}为 {price}，已{condition}设定的阈值 {threshold}！"
-                            )
-                            rule["last_triggered"] = True
-                            self.save_data()
-                        elif not triggered and rule.get("last_triggered", False):
-                            # 汇率回落/升回，重置触发状态
-                            rule["last_triggered"] = False
-                            self.save_data()
-
-                    # 推送通知
-                    for msg in messages:
-                        logger.info(f"触发推送给 {session_id}: {msg}")
-                        try:
-                            # 尝试使用 context 的 send_message 推送
-                            await self.context.send_message(
-                                session_id, MessageChain(chain=[Plain(msg)])
-                            )
-                        except Exception as e:
-                            logger.error(f"消息推送失败: {e}")
+                            await asyncio.wait_for(self._monitor_wakeup.wait(), timeout=sleep_seconds)
+                            self._monitor_wakeup.clear()
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(sleep_seconds)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"汇率监控后台任务报错: {e}")
+                # 退避补偿：防止异常发生在 sleep 之前导致死循环炸 CPU
+                await asyncio.sleep(60)
 
     async def chart_push_loop(self):
         """独立的图表推送后台任务，按 chart_cron 定时执行。"""
         while True:
             try:
+                # 先计算到下次触发时间的休眠秒数，确保启动时不会立即推送
                 chart_cron = self.data.get("chart_cron", "0 12 * * 1-5")
                 if not croniter.croniter.is_valid(chart_cron):
                     chart_cron = "0 12 * * 1-5"
@@ -1138,7 +1096,16 @@ class ICBCExchangeRatePlugin(Star):
                 sleep_seconds = (next_time - now).total_seconds()
 
                 if sleep_seconds > 0:
-                    await asyncio.sleep(sleep_seconds)
+                    if hasattr(self, '_chart_wakeup'):
+                        try:
+                            await asyncio.wait_for(self._chart_wakeup.wait(), timeout=sleep_seconds)
+                            self._chart_wakeup.clear()
+                            # 被唤醒说明 cron 配置已变更，重新计算
+                            continue
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(sleep_seconds)
 
                 await self._auto_send_charts()
 
@@ -1146,3 +1113,5 @@ class ICBCExchangeRatePlugin(Star):
                 break
             except Exception as e:
                 logger.error(f"图表推送后台任务报错: {e}")
+                # 退避补偿：防止异常发生在 sleep 之前导致死循环炸 CPU
+                await asyncio.sleep(60)
