@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.1] - 2026-03-07
+
+### Fixed
+
+- 修复首次运行时数据存储目录可能不存在导致 `FileNotFoundError` 的问题；使用 `Path.mkdir(parents=True, exist_ok=True)` 确保目录存在，并改用 `pathlib.Path` 语法拼接路径。
+
+### Changed
+
+- 为 `fetch_exchange_rates` 中关闭 SSL 证书验证的代码添加安全警告注释，说明关闭原因（工行 API SSL 兼容性问题）及风险评估。
+
 ## [1.3.0] - 2026-03-07
 
 ### Changed
