@@ -24,7 +24,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.3.1"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.3.2"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -93,12 +93,6 @@ class ICBCExchangeRatePlugin(Star):
 
         ssl_context = ssl.create_default_context()
         ssl_context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
-        # ⚠️ 安全警告: 此处关闭了 SSL 证书验证，存在中间人攻击 (MITM) 风险。
-        # 原因: 工行 API (papi.icbc.com.cn) 的 SSL 配置存在兼容性问题，
-        # 在较新版本 OpenSSL 中会触发 UNSAFE_LEGACY_RENEGOTIATION_DISABLED 错误。
-        # 由于本插件仅读取公开汇率数据（非敏感操作），风险可控。
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
 
         max_retries = 3
         for attempt in range(1, max_retries + 1):
