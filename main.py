@@ -24,7 +24,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.2.0"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.2.1"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -145,7 +145,8 @@ class ICBCExchangeRatePlugin(Star):
             return 60
 
 
-    def format_rate_info(self, rate_info: dict) -> str:
+    @staticmethod
+    def format_rate_info(rate_info: dict) -> str:
         name = rate_info.get("currencyCHName", "")
         code = rate_info.get("currencyENName", "")
         buy = rate_info.get("foreignBuy", "N/A")
@@ -316,8 +317,7 @@ class ICBCExchangeRatePlugin(Star):
         self.save_data()
 
         # 唤醒现有的 monitor_loop 以应用新 cron
-        if hasattr(self, '_monitor_wakeup'):
-            self._monitor_wakeup.set()
+        self._monitor_wakeup.set()
 
         yield event.plain_result(f"汇率后台监控频率已成功修改为: {cron_expr}。")
 
@@ -407,7 +407,13 @@ class ICBCExchangeRatePlugin(Star):
 
         chart_path = self._generate_chart(currency, records)
         if chart_path:
-            yield event.image_result(chart_path)
+            try:
+                yield event.image_result(chart_path)
+            finally:
+                try:
+                    os.unlink(chart_path)
+                except OSError:
+                    pass
         else:
             yield event.plain_result("图表生成失败，请稍后重试。")
 
@@ -464,8 +470,7 @@ class ICBCExchangeRatePlugin(Star):
         self.save_data()
 
         # 唤醒现有的 chart_push_loop 以应用新 cron
-        if hasattr(self, '_chart_wakeup'):
-            self._chart_wakeup.set()
+        self._chart_wakeup.set()
 
         yield event.plain_result(f"走势图定时推送频率已修改为: {cron_expr}")
 
@@ -848,25 +853,24 @@ class ICBCExchangeRatePlugin(Star):
             plt.tight_layout(rect=[0, 0.02, 1, 0.98])
 
             # 保存到临时文件
-            tmp = tempfile.NamedTemporaryFile(
-                suffix=".png", prefix="icbc_chart_", delete=False
-            )
+            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="icbc_chart_")
+            os.close(fd)
             fig.savefig(
-                tmp.name,
+                tmp_path,
                 dpi=150,
                 bbox_inches="tight",
                 facecolor=fig.get_facecolor(),
                 edgecolor="none",
             )
             plt.close(fig)
-            return tmp.name
+            return tmp_path
 
         except Exception as e:
             logger.error(f"生成汇率图表失败: {e}")
             return None
 
     def _collect_chart_data(self, rates: list):
-        """采集追踪币种的历史数据，清除超过7天的旧数据。"""
+        """采集追踪币种的历史数据，保留最近7个工作日（约9自然天）的数据。"""
         now = datetime.now()
 
         chart_monitors = self.data.get("chart_monitors", {})
@@ -900,7 +904,7 @@ class ICBCExchangeRatePlugin(Star):
 
         # 清理超期数据：遍历 chart_data 所有 key（而非仅 all_currencies），
         # 避免已取消追踪的币种数据残留导致存储泄漏
-        cutoff = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
+        cutoff = (now - timedelta(days=9)).strftime("%Y-%m-%d %H:%M")
         stale_keys = []
         for cur_name in list(chart_data.keys()):
             chart_data[cur_name] = [
@@ -946,6 +950,11 @@ class ICBCExchangeRatePlugin(Star):
                     logger.info(f"自动推送 {currency} 走势图给 {session_id}")
                 except Exception as e:
                     logger.error(f"自动推送走势图失败 ({session_id}, {currency}): {e}")
+                finally:
+                    try:
+                        os.unlink(chart_path)
+                    except OSError:
+                        pass
 
     @filter.command("icbc_help")
     async def help_cmd(self, event: AstrMessageEvent):
@@ -971,10 +980,10 @@ class ICBCExchangeRatePlugin(Star):
             "建议：后台轮询间隔尽量设置在 60 分钟或更长，防止过于频繁请求导致数据获取失败。\n"
             "格式: 分 时 日 月 周\n"
             "举例:\n"
-            "0 * * * *     (每小时的第0分执行一次，约每60分钟)\n"
-            "*/30 * * * *  (每30分钟执行一次)\n"
-            "0 8 * * *     (每天早上8点执行)\n"
-            "0 9,13,18 * * * (每天9、13、18点执行)"
+            "0 * * * *        (每小时的第0分执行一次，约每60分钟)\n"
+            "*/30 * * * *     (每30分钟执行一次)\n"
+            "0 8 * * *        (每天早上8点执行)\n"
+            "0 9,13,18 * * *  (每天9、13、18点执行)"
         )
         yield event.plain_result(help_text)
 
@@ -1064,15 +1073,12 @@ class ICBCExchangeRatePlugin(Star):
                 next_time = cron.get_next(datetime)
                 sleep_seconds = (next_time - now).total_seconds()
 
-                if sleep_seconds > 0:
-                    if hasattr(self, '_monitor_wakeup'):
-                        try:
-                            await asyncio.wait_for(self._monitor_wakeup.wait(), timeout=sleep_seconds)
-                            self._monitor_wakeup.clear()
-                        except asyncio.TimeoutError:
-                            pass
-                    else:
-                        await asyncio.sleep(sleep_seconds)
+                sleep_seconds = max(sleep_seconds, 1)
+                try:
+                    await asyncio.wait_for(self._monitor_wakeup.wait(), timeout=sleep_seconds)
+                    self._monitor_wakeup.clear()
+                except asyncio.TimeoutError:
+                    pass
 
             except asyncio.CancelledError:
                 break
@@ -1095,17 +1101,14 @@ class ICBCExchangeRatePlugin(Star):
                 next_time = cron.get_next(datetime)
                 sleep_seconds = (next_time - now).total_seconds()
 
-                if sleep_seconds > 0:
-                    if hasattr(self, '_chart_wakeup'):
-                        try:
-                            await asyncio.wait_for(self._chart_wakeup.wait(), timeout=sleep_seconds)
-                            self._chart_wakeup.clear()
-                            # 被唤醒说明 cron 配置已变更，重新计算
-                            continue
-                        except asyncio.TimeoutError:
-                            pass
-                    else:
-                        await asyncio.sleep(sleep_seconds)
+                sleep_seconds = max(sleep_seconds, 1)
+                try:
+                    await asyncio.wait_for(self._chart_wakeup.wait(), timeout=sleep_seconds)
+                    self._chart_wakeup.clear()
+                    # 被唤醒说明 cron 配置已变更，重新计算
+                    continue
+                except asyncio.TimeoutError:
+                    pass
 
                 await self._auto_send_charts()
 

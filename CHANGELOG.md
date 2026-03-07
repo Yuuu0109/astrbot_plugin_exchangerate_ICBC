@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.1] - 2026-03-07
+
+### Fixed
+
+- 修复 `_generate_chart` 中使用 `NamedTemporaryFile(delete=False)` 导致临时图表文件从未被清理的资源泄漏问题；改用 `tempfile.mkstemp` 并在发送完成后自动删除临时文件。
+- 修复数据清理策略与工作日不匹配的问题：将 `timedelta(days=7)` 调整为 `timedelta(days=9)`，确保保留最近 7 个完整工作日的数据。
+- 修复 `sleep_seconds` 计算为 0 或负数时跳过休眠的边界问题；添加 `max(sleep_seconds, 1)` 下限保护。
+
+### Changed
+
+- 移除 `monitor_loop` 和 `chart_push_loop` 中多余的 `hasattr` 检查及其永远不会执行的 `else` 死代码分支。
+- 移除 `set_cron` 和 `chart_cron_cmd` 中多余的 `hasattr` 防御性检查。
+- 将 `format_rate_info` 标记为 `@staticmethod`。
+- 统一 `/icbc_help` 中 cron 表达式示例的对齐排版。
+
 ## [1.2.0] - 2026-03-05
 
 ### Fixed
