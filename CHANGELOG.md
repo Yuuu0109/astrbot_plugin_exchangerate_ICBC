@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.0] - 2026-03-07
+
+### Changed
+
+- 将 `_generate_chart` 的同步调用改为 `asyncio.to_thread` 异步调用，避免 matplotlib 图表渲染阻塞事件循环导致机器人消息响应卡顿。
+
 ## [1.2.1] - 2026-03-07
 
 ### Fixed

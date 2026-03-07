@@ -24,7 +24,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.2.1"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.3.0"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -405,7 +405,7 @@ class ICBCExchangeRatePlugin(Star):
             )
             return
 
-        chart_path = self._generate_chart(currency, records)
+        chart_path = await asyncio.to_thread(self._generate_chart, currency, records)
         if chart_path:
             try:
                 yield event.image_result(chart_path)
@@ -938,7 +938,7 @@ class ICBCExchangeRatePlugin(Star):
                 if not records:
                     continue
 
-                chart_path = self._generate_chart(currency, records)
+                chart_path = await asyncio.to_thread(self._generate_chart, currency, records)
                 if not chart_path:
                     continue
 
