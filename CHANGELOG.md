@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0] - 2026-03-10
+
+### Changed
+
+- 重构图表渲染模块：剥离复杂的 matplotlib 绘制以及中文字体加载逻辑至独立的 `chart_generator.py`（ `ExchangeRateChartGenerator` 类 ），使得主程序回归指令监听与任务调度的职责核心。
+- 解决图表线程安全隐患：弃用全局状态式的 `matplotlib.pyplot`，全面改由 Matplotlib 的面向对象 API (Object-Oriented API) 构建图表画布，从根本上防止因异步并发造成的图像渲染串台与资源竞争崩溃。
+- 主题及配色抽取解耦：解除大量硬编码的主题颜色项，建立包含亮色与暗色模式的 `THEMES` 常量参数配置字典，大大提升后续皮肤适配的功能灵活性与扩展性。
+
 ## [1.3.3] - 2026-03-10
 
 ### Changed
