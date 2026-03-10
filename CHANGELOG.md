@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.3] - 2026-03-10
+
+### Changed
+
+- 监控规则添加逻辑优化：相同币种+条件+类型的规则已存在时，自动更新阈值而非新建重复规则。
+- 删除指令拆分：移除 `/icbc_del`，新增 `/icbc_del_buy` 和 `/icbc_del_sell`，支持按结汇价/购汇价精确删除监控规则。
+- 合并 `/icbc_list` 和 `/icbc_chart_list` 为统一的 `/icbc_list` 指令，同时展示监控规则和曲线追踪信息，移除 `/icbc_chart_list`。
+
 ## [1.3.2] - 2026-03-07
 
 ### Changed

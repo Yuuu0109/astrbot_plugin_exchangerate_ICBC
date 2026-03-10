@@ -24,7 +24,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.3.2"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.3.3"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -226,15 +226,26 @@ class ICBCExchangeRatePlugin(Star):
         monitors = self.data.setdefault("monitors", {})
         session_monitors = monitors.setdefault(session_id, [])
 
+        # 检查是否已存在相同 币种+条件+类型 的规则，若存在则更新阈值
         for rule in session_monitors:
             if (
                 rule["currency"] == currency
                 and rule["condition"] == condition
-                and rule["threshold"] == float(threshold)
                 and rule["type"] == price_type
             ):
+                old_threshold = rule["threshold"]
+                if old_threshold == float(threshold):
+                    yield event.plain_result(
+                        f"检测到重复的监控规则: {currency} {condition} {threshold}，请勿重复添加。"
+                    )
+                    return
+                rule["threshold"] = float(threshold)
+                rule["last_triggered"] = False
+                self.save_data()
+
+                type_name = "结汇价" if price_type == "buy" else "购汇价"
                 yield event.plain_result(
-                    f"检测到重复的监控规则: {currency} {condition} {threshold}，请勿重复添加。"
+                    f"已更新监控: {currency} {type_name} {condition} {old_threshold} → {threshold}"
                 )
                 return
 
@@ -257,9 +268,20 @@ class ICBCExchangeRatePlugin(Star):
             f"成功添加监控: 当 {currency} {type_name} {condition} {threshold} 时将通知您。\n(当前后台约每 {interval_minutes} 分钟获取一次数据)"
         )
 
-    @filter.command("icbc_del")
-    async def remove_monitor(self, event: AstrMessageEvent, currency: str):
-        """删除特定币种的汇率监控。用法: /icbc_del 美元"""
+    @filter.command("icbc_del_buy")
+    async def remove_monitor_buy(self, event: AstrMessageEvent, currency: str):
+        """删除特定币种的结汇价监控。用法: /icbc_del_buy 美元"""
+        async for res in self._del_monitor_impl(event, currency, "buy"):
+            yield res
+
+    @filter.command("icbc_del_sell")
+    async def remove_monitor_sell(self, event: AstrMessageEvent, currency: str):
+        """删除特定币种的购汇价监控。用法: /icbc_del_sell 美元"""
+        async for res in self._del_monitor_impl(event, currency, "sell"):
+            yield res
+
+    async def _del_monitor_impl(self, event, currency, price_type=None):
+        """删除监控规则的共享实现。price_type 为 None 时删除该币种所有规则。"""
         session_id = event.unified_msg_origin
         monitors = self.data.get("monitors", {})
         if session_id not in monitors:
@@ -267,40 +289,76 @@ class ICBCExchangeRatePlugin(Star):
             return
 
         initial_len = len(monitors[session_id])
-        monitors[session_id] = [
-            r for r in monitors[session_id] if r["currency"] != currency
-        ]
+        if price_type:
+            monitors[session_id] = [
+                r for r in monitors[session_id]
+                if not (r["currency"] == currency and r.get("type", "sell") == price_type)
+            ]
+        else:
+            monitors[session_id] = [
+                r for r in monitors[session_id] if r["currency"] != currency
+            ]
 
         if len(monitors[session_id]) < initial_len:
             self.data["monitors"] = monitors
             self.save_data()
-            yield event.plain_result(f"已删除 {currency} 的监控规则。")
+            if price_type:
+                type_name = "结汇价" if price_type == "buy" else "购汇价"
+                yield event.plain_result(f"已删除 {currency} 的{type_name}监控规则。")
+            else:
+                yield event.plain_result(f"已删除 {currency} 的所有监控规则。")
         else:
-            yield event.plain_result(f"未找到 {currency} 的监控规则。")
+            if price_type:
+                type_name = "结汇价" if price_type == "buy" else "购汇价"
+                yield event.plain_result(f"未找到 {currency} 的{type_name}监控规则。")
+            else:
+                yield event.plain_result(f"未找到 {currency} 的监控规则。")
 
     @filter.command("icbc_list")
     async def list_monitors(self, event: AstrMessageEvent):
-        """查看当前会话的汇率监控列表。用法: /icbc_list"""
+        """查看当前会话的监控规则和曲线追踪。用法: /icbc_list"""
         session_id = event.unified_msg_origin
-        monitors = self.data.get("monitors", {}).get(session_id, [])
-        if not monitors:
-            yield event.plain_result("当前没有任何监控规则。")
-            return
+        parts = []
 
-        results = []
-        for r in monitors:
-            type_name = "结汇价" if r.get("type", "sell") == "buy" else "购汇价"
-            results.append(
-                f"- {r['currency']} {type_name} {r['condition']} {r['threshold']}"
+        # ===== 监控规则部分 =====
+        monitors = self.data.get("monitors", {}).get(session_id, [])
+        if monitors:
+            cron_expr = self.data.get("cron", "*/30 * * * *")
+            interval_minutes = self._get_cron_interval_minutes(cron_expr)
+            results = []
+            for r in monitors:
+                type_name = "结汇价" if r.get("type", "sell") == "buy" else "购汇价"
+                results.append(
+                    f"- {r['currency']} {type_name} {r['condition']} {r['threshold']}"
+                )
+            parts.append(
+                f"※ 监控规则 (后台约每 {interval_minutes} 分钟获取一次数据):\n"
+                + "\n".join(results)
             )
 
-        cron_expr = self.data.get("cron", "*/30 * * * *")
-        interval_minutes = self._get_cron_interval_minutes(cron_expr)
+        # ===== 曲线追踪部分 =====
+        tracked = self.data.get("chart_monitors", {}).get(session_id, [])
+        if tracked:
+            chart_data = self.data.get("chart_data", {})
+            info_parts = []
+            for c in tracked:
+                count = len(chart_data.get(c, []))
+                info_parts.append(f"- {c}: {count} 条数据")
 
-        yield event.plain_result(
-            f"当前的监控规则 (后台约每 {interval_minutes} 分钟获取一次数据):\n"
-            + "\n".join(results)
-        )
+            auto_send = self.data.get("chart_auto_send", {}).get(session_id, False)
+            auto_status = "已开启" if auto_send else "未开启"
+
+            parts.append(
+                "※ 汇率曲线追踪:\n"
+                + "\n".join(info_parts)
+                + f"\n定时推送走势图: {auto_status}"
+            )
+
+        if not parts:
+            yield event.plain_result("当前没有任何监控规则或曲线追踪。")
+            return
+
+        yield event.plain_result("\n\n".join(parts))
 
     @filter.command("icbc_cron")
     async def set_cron(self, event: AstrMessageEvent, cron_expr: GreedyStr):
@@ -362,35 +420,6 @@ class ICBCExchangeRatePlugin(Star):
         self.save_data()
         yield event.plain_result(f"已移除 {currency} 的汇率曲线追踪。")
 
-    @filter.command("icbc_chart_list")
-    async def chart_list(self, event: AstrMessageEvent):
-        """查看当前会话的汇率曲线追踪列表。用法: /icbc_chart_list"""
-        session_id = event.unified_msg_origin
-        tracked = self.data.get("chart_monitors", {}).get(session_id, [])
-        if not tracked:
-            yield event.plain_result(
-                "当前没有汇率曲线追踪，使用 /icbc_chart_add [币种] 添加。"
-            )
-            return
-
-        lines = [f"- {c}" for c in tracked]
-        chart_data = self.data.get("chart_data", {})
-        info_parts = []
-        for c in tracked:
-            count = len(chart_data.get(c, []))
-            info_parts.append(f"{c}: {count} 条数据")
-
-        auto_send = self.data.get("chart_auto_send", {}).get(session_id, False)
-        auto_status = "已开启" if auto_send else "未开启"
-
-        yield event.plain_result(
-            "当前追踪的汇率曲线：\n"
-            + "\n".join(lines)
-            + f"\n\n定时推送走势图：{auto_status}"
-            + "\n\n数据采集情况：\n"
-            + "\n".join(info_parts)
-            + "\n\n使用 /icbc_chart [币种] 查看走势图"
-        )
 
     @filter.command("icbc_chart")
     async def chart_view(self, event: AstrMessageEvent, currency: str):
@@ -961,14 +990,14 @@ class ICBCExchangeRatePlugin(Star):
         help_text = (
             "工商银行汇率监控插件使用说明：\n"
             "/icbc [币种名称]：实时查询汇率。\n"
-            "/icbc_add_buy [币种] [高于/低于] [数值]：添加购汇价监控规则。\n"
-            "/icbc_add_sell [币种] [高于/低于] [数值]：添加结汇价监控规则。\n"
-            "/icbc_del [币种]：删除特定的汇率监控规则。\n"
-            "/icbc_list：查看当前已配置的监控。\n\n"
+            "/icbc_add_buy [币种] [高于/低于] [数值]：添加/更新购汇价监控规则。\n"
+            "/icbc_add_sell [币种] [高于/低于] [数值]：添加/更新结汇价监控规则。\n"
+            "/icbc_del_buy [币种]：删除特定币种的购汇价监控规则。\n"
+            "/icbc_del_sell [币种]：删除特定币种的结汇价监控规则。\n"
+            "/icbc_list：查看当前监控规则和曲线追踪。\n\n"
             "※ 汇率曲线追踪：\n"
             "/icbc_chart_add [币种]：添加汇率曲线追踪。\n"
             "/icbc_chart_del [币种]：删除汇率曲线追踪。\n"
-            "/icbc_chart_list：查看追踪列表和数据采集情况。\n"
             "/icbc_chart [币种]：查看汇率走势折线图。\n"
             "/icbc_chart_auto [on/off]：开启/关闭定时推送走势图。\n"
             "/icbc_chart_cron [cron表达式]：设置走势图推送频率（默认工作日中午12点）。\n\n"
@@ -982,7 +1011,8 @@ class ICBCExchangeRatePlugin(Star):
             "0 * * * *        (每小时的第0分执行一次，约每60分钟)\n"
             "*/30 * * * *     (每30分钟执行一次)\n"
             "0 8 * * *        (每天早上8点执行)\n"
-            "0 9,13,18 * * *  (每天9、13、18点执行)"
+            "0 9,13,18 * * *  (每天9、13、18点执行)\n"
+            "0 12 * * 1-5     (工作日中午12点执行)"
         )
         yield event.plain_result(help_text)
 
