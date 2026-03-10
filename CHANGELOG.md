@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.1] - 2026-03-10
+
+### Changed
+
+- **性能优化**：引入全局持久化的 `aiohttp.ClientSession` 实例，复用底层 TCP 与 SSL 连接，消除原方案下频繁创建与销毁会话的耗时开销与网络超时风险。
+- **匹配机制增强**：完全重构 `_find_rate_by_currency` 方法至双重筛选机制：优先采用 `==` 进行严谨全字对比（含中英文名），失败后回退至部分子串匹配，规避模糊查询产生的定位误差。
+- **架构解耦**：从 `monitor_loop` 剥离阈值检查、触发判定与消息分发逻辑至独立的 `_check_and_notify_monitors` 私有方法，大幅降低后台调度的圈复杂度，恢复单一职责与代码可读性。
+- **图表渲染解散**：进一步拆解 `ExchangeRateChartGenerator.generate` 的“上帝方法”职能，提取出负责数据过滤、核心绘图、指标标注和主题装修四个专属流水线节点 `_parse_records`, `_draw_series`, `_add_annotations`, `_apply_theme_and_layout`，极大化提升模块内聚及未来拓展空间。
+
 ## [1.4.0] - 2026-03-10
 
 ### Fixed

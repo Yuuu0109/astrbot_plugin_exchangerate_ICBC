@@ -19,11 +19,12 @@ from astrbot.core.star.filter.command import GreedyStr
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.4.0"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.4.1"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
+        self._session: aiohttp.ClientSession | None = None
         self.data: dict = {
             "cron": "*/30 * * * *",
             "monitors": {},  # userId/groupId -> list of monitor rules
@@ -65,11 +66,14 @@ class ICBCExchangeRatePlugin(Star):
 
     async def initialize(self):
         logger.info("初始化工商银行汇率监控插件...")
+        self._session = aiohttp.ClientSession()
         self.monitor_task = asyncio.create_task(self.monitor_loop())
         self.chart_push_task = asyncio.create_task(self.chart_push_loop())
 
     async def terminate(self):
         logger.info("销毁工商银行汇率监控插件...")
+        if self._session and not self._session.closed:
+            await self._session.close()
         if self.monitor_task:
             self.monitor_task.cancel()
         if self.chart_push_task:
@@ -92,22 +96,23 @@ class ICBCExchangeRatePlugin(Star):
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        url,
-                        headers=headers,
-                        json={},
-                        ssl=ssl_context,
-                        timeout=aiohttp.ClientTimeout(total=15),
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if data.get("code") == 0:
-                                return data.get("data", [])
-                            else:
-                                logger.error(f"API请求返回错误代码: {data}")
+                if self._session is None or self._session.closed:
+                    self._session = aiohttp.ClientSession()
+                async with self._session.post(
+                    url,
+                    headers=headers,
+                    json={},
+                    ssl=ssl_context,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("code") == 0:
+                            return data.get("data", [])
                         else:
-                            logger.error(f"API请求失败，状态码: {resp.status}")
+                            logger.error(f"API请求返回错误代码: {data}")
+                    else:
+                        logger.error(f"API请求失败，状态码: {resp.status}")
             except Exception as e:
                 logger.warning(f"获取汇率数据异常 (第{attempt}/{max_retries}次): {e}")
                 if attempt < max_retries:
@@ -119,10 +124,13 @@ class ICBCExchangeRatePlugin(Star):
     @staticmethod
     def _find_rate_by_currency(rates: list, currency: str) -> dict | None:
         """在汇率列表中查找匹配的币种，返回匹配的条目或 None。"""
+        # 第一遍：精准匹配
         for rate in rates:
-            if currency in rate.get(
-                "currencyCHName", ""
-            ) or currency.upper() in rate.get("currencyENName", ""):
+            if currency == rate.get("currencyCHName", "") or currency.upper() == rate.get("currencyENName", ""):
+                return rate
+        # 第二遍：部分匹配
+        for rate in rates:
+            if currency in rate.get("currencyCHName", "") or currency.upper() in rate.get("currencyENName", ""):
                 return rate
         return None
 
@@ -622,6 +630,68 @@ class ICBCExchangeRatePlugin(Star):
         "sell": ("foreignSell", "购汇价"),
     }
 
+    async def _check_and_notify_monitors(self, rates: list):
+        """分离出来的规则阈值检查与消息触发逻辑。"""
+        monitors = self.data.get("monitors", {})
+        if not monitors:
+            return
+
+        is_changed = False
+        for session_id, rules in monitors.items():
+            messages = []
+            for rule in rules:
+                cur_name = rule["currency"]
+                condition = rule["condition"]
+                threshold = rule["threshold"]
+                price_type = rule.get("type", "sell")
+
+                target_rate = self._find_rate_by_currency(rates, cur_name)
+                if not target_rate:
+                    continue
+
+                # 使用映射获取价格字段和中文名
+                field_key, type_name = self._PRICE_TYPE_MAP.get(
+                    price_type, ("foreignSell", "购汇价")
+                )
+
+                try:
+                    price = float(target_rate.get(field_key, 0))
+                except ValueError:
+                    continue
+
+                if price <= 0:
+                    continue
+
+                triggered = (
+                    (condition == "高于" and price > threshold)
+                    or (condition == "低于" and price < threshold)
+                )
+
+                if triggered and not rule.get("last_triggered", False):
+                    messages.append(
+                        f"汇率提醒: {target_rate['currencyCHName']} {type_name}为 {price}，已{condition}设定的阈值 {threshold}！"
+                    )
+                    rule["last_triggered"] = True
+                    is_changed = True
+                elif not triggered and rule.get("last_triggered", False):
+                    # 汇率回落/升回，重置触发状态
+                    rule["last_triggered"] = False
+                    is_changed = True
+
+            # 推送通知
+            for msg in messages:
+                logger.info(f"触发推送给 {session_id}: {msg}")
+                try:
+                    await self.context.send_message(
+                        session_id, MessageChain(chain=[Plain(msg)])
+                    )
+                except Exception as e:
+                    logger.error(f"消息推送失败: {e}")
+
+        # 所有规则遍历完毕后统一保存一次
+        if is_changed:
+            self.save_data()
+
     async def monitor_loop(self):
         while True:
             try:
@@ -630,67 +700,8 @@ class ICBCExchangeRatePlugin(Star):
                 if rates:
                     # 采集汇率曲线数据
                     self._collect_chart_data(rates)
-
-                    monitors = self.data.get("monitors", {})
-                    if monitors:
-                        # 使用标记位，避免在内层循环中多次调用 save_data()
-                        is_changed = False
-
-                        # 遍历所有监控规则
-                        for session_id, rules in monitors.items():
-                            messages = []
-                            for rule in rules:
-                                cur_name = rule["currency"]
-                                condition = rule["condition"]
-                                threshold = rule["threshold"]
-                                price_type = rule.get("type", "sell")
-
-                                target_rate = self._find_rate_by_currency(rates, cur_name)
-                                if not target_rate:
-                                    continue
-
-                                # 使用映射获取价格字段和中文名
-                                field_key, type_name = self._PRICE_TYPE_MAP.get(
-                                    price_type, ("foreignSell", "购汇价")
-                                )
-
-                                try:
-                                    price = float(target_rate.get(field_key, 0))
-                                except ValueError:
-                                    continue
-
-                                if price <= 0:
-                                    continue
-
-                                triggered = (
-                                    (condition == "高于" and price > threshold)
-                                    or (condition == "低于" and price < threshold)
-                                )
-
-                                if triggered and not rule.get("last_triggered", False):
-                                    messages.append(
-                                        f"汇率提醒: {target_rate['currencyCHName']} {type_name}为 {price}，已{condition}设定的阈值 {threshold}！"
-                                    )
-                                    rule["last_triggered"] = True
-                                    is_changed = True
-                                elif not triggered and rule.get("last_triggered", False):
-                                    # 汇率回落/升回，重置触发状态
-                                    rule["last_triggered"] = False
-                                    is_changed = True
-
-                            # 推送通知
-                            for msg in messages:
-                                logger.info(f"触发推送给 {session_id}: {msg}")
-                                try:
-                                    await self.context.send_message(
-                                        session_id, MessageChain(chain=[Plain(msg)])
-                                    )
-                                except Exception as e:
-                                    logger.error(f"消息推送失败: {e}")
-
-                        # 所有规则遍历完毕后统一保存一次
-                        if is_changed:
-                            self.save_data()
+                    # 检查阈值并推送通知
+                    await self._check_and_notify_monitors(rates)
 
                 # 无论 rates/monitors 是否为空，都必须执行休眠
                 cron_expr = self.data.get("cron", "*/30 * * * *")
