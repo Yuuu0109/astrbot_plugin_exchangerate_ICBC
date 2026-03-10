@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.2] - 2026-03-10
+
+### Fixed
+
+- **异常兜底防崩溃**：细化 `fetch_exchange_rates` 与后台定时任务对网络超时的 `aiohttp.ClientError` 及 `asyncio.TimeoutError` 的分类捕获。同时保障请求失败时显式执行 `session.close()` 释放底层 TCP/SSL Socket，彻底根除长期运行偶发的连接池泄漏。
+- **发图文件竞态**：修复了在异步推送机制下，机器人的消息框架尚未来得及读取文件就被 `finally` 中的 `os.unlink` 立刻删除导致的 `FileNotFoundError` 发图失败隐患，改为通过异步任务定时挂起（留存60秒）执行延迟删除。
+- **并发锁保障配置**：引入 `asyncio.Lock()` 强制规避高并发群聊响应导致的深层字典修改与文件多次写出重叠覆盖边界。连带地升级了读写类内部逻辑均为底层安全的 `await self.save_data()` 异步调用链路。
+- **图表内存泄漏彻底围剿**：抛弃了直接更改 `matplotlib.rcParams` 的粗暴行为防止出现环境相互污染。并在所有生图生成结束返回时，强制触发 `fig.clf()` 与 `plt.close(fig)` ，消解由于挂机数日可能遗留的底端画布引用堆积而成的内存溢出威胁。
+
 ## [1.4.1] - 2026-03-10
 
 ### Changed

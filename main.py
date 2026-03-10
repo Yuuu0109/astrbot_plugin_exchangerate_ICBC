@@ -19,7 +19,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.4.1"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.4.2"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -38,6 +38,7 @@ class ICBCExchangeRatePlugin(Star):
         self.chart_push_task: asyncio.Task | None = None
         self._monitor_wakeup = asyncio.Event()
         self._chart_wakeup = asyncio.Event()
+        self._lock = asyncio.Lock()
 
         data_dir = StarTools.get_data_dir(
             plugin_name="astrbot_plugin_exchangerate_icbc"
@@ -57,10 +58,11 @@ class ICBCExchangeRatePlugin(Star):
         except Exception as e:
             logger.error(f"加载汇率监控配置失败: {e}")
 
-    def save_data(self):
+    async def save_data(self):
         try:
-            with open(self.data_file, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
+            async with self._lock:
+                with open(self.data_file, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存汇率监控配置失败: {e}")
 
@@ -113,8 +115,20 @@ class ICBCExchangeRatePlugin(Star):
                             logger.error(f"API请求返回错误代码: {data}")
                     else:
                         logger.error(f"API请求失败，状态码: {resp.status}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.warning(f"获取汇率数据网络异常 (第{attempt}/{max_retries}次): {e}")
+                if self._session and not self._session.closed:
+                    await self._session.close()
+                self._session = None
+                if attempt < max_retries:
+                    await asyncio.sleep(2 * attempt)
+                else:
+                    logger.error(f"获取汇率数据失败，已重试{max_retries}次")
             except Exception as e:
                 logger.warning(f"获取汇率数据异常 (第{attempt}/{max_retries}次): {e}")
+                if self._session and not self._session.closed:
+                    await self._session.close()
+                self._session = None
                 if attempt < max_retries:
                     await asyncio.sleep(2 * attempt)
                 else:
@@ -244,7 +258,7 @@ class ICBCExchangeRatePlugin(Star):
                     return
                 rule["threshold"] = float(threshold)
                 rule["last_triggered"] = False
-                self.save_data()
+                await self.save_data()
 
                 type_name = "结汇价" if price_type == "buy" else "购汇价"
                 yield event.plain_result(
@@ -260,7 +274,7 @@ class ICBCExchangeRatePlugin(Star):
             "last_triggered": False,
         }
         session_monitors.append(rule)
-        self.save_data()
+        await self.save_data()
 
         type_name = "结汇价" if price_type == "buy" else "购汇价"
 
@@ -304,7 +318,7 @@ class ICBCExchangeRatePlugin(Star):
 
         if len(monitors[session_id]) < initial_len:
             self.data["monitors"] = monitors
-            self.save_data()
+            await self.save_data()
             if price_type:
                 type_name = "结汇价" if price_type == "buy" else "购汇价"
                 yield event.plain_result(f"已删除 {currency} 的{type_name}监控规则。")
@@ -374,7 +388,7 @@ class ICBCExchangeRatePlugin(Star):
             return
 
         self.data["cron"] = cron_expr
-        self.save_data()
+        await self.save_data()
 
         # 唤醒现有的 monitor_loop 以应用新 cron
         self._monitor_wakeup.set()
@@ -399,7 +413,7 @@ class ICBCExchangeRatePlugin(Star):
             return
 
         session_monitors.append(currency)
-        self.save_data()
+        await self.save_data()
 
         yield event.plain_result(
             f"已添加 {currency} 到汇率曲线追踪列表。\n"
@@ -420,9 +434,18 @@ class ICBCExchangeRatePlugin(Star):
 
         chart_monitors[session_id].remove(currency)
         self.data["chart_monitors"] = chart_monitors
-        self.save_data()
+        await self.save_data()
         yield event.plain_result(f"已移除 {currency} 的汇率曲线追踪。")
 
+
+    @staticmethod
+    async def _delayed_remove_file(path: str, delay: int = 60):
+        """延迟删除生成的图片文件，避免发送冲突"""
+        await asyncio.sleep(delay)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
     @filter.command("icbc_chart")
     async def chart_view(self, event: AstrMessageEvent, currency: str):
@@ -441,10 +464,8 @@ class ICBCExchangeRatePlugin(Star):
             try:
                 yield event.image_result(chart_path)
             finally:
-                try:
-                    os.unlink(chart_path)
-                except OSError:
-                    pass
+                # 挂起异步延迟清理任务，取代立即删除
+                asyncio.create_task(self._delayed_remove_file(chart_path))
         else:
             yield event.plain_result("图表生成失败，请稍后重试。")
 
@@ -475,7 +496,7 @@ class ICBCExchangeRatePlugin(Star):
         chart_auto_send = self.data.get("chart_auto_send", {})
         chart_auto_send[session_id] = enabled
         self.data["chart_auto_send"] = chart_auto_send
-        self.save_data()
+        await self.save_data()
 
         chart_cron = self.data.get("chart_cron", "0 12 * * 1-5")
         if enabled:
@@ -498,14 +519,14 @@ class ICBCExchangeRatePlugin(Star):
             return
 
         self.data["chart_cron"] = cron_expr
-        self.save_data()
+        await self.save_data()
 
         # 唤醒现有的 chart_push_loop 以应用新 cron
         self._chart_wakeup.set()
 
         yield event.plain_result(f"走势图定时推送频率已修改为: {cron_expr}")
 
-    def _collect_chart_data(self, rates: list):
+    async def _collect_chart_data(self, rates: list):
         """采集追踪币种的历史数据，保留最近7个工作日（约9自然天）的数据。"""
         now = datetime.now()
 
@@ -553,7 +574,7 @@ class ICBCExchangeRatePlugin(Star):
             del chart_data[key]
 
         self.data["chart_data"] = chart_data
-        self.save_data()
+        await self.save_data()
 
     async def _auto_send_charts(self):
         """向开启了自动推送的会话发送追踪币种的走势图。"""
@@ -587,10 +608,8 @@ class ICBCExchangeRatePlugin(Star):
                 except Exception as e:
                     logger.error(f"自动推送走势图失败 ({session_id}, {currency}): {e}")
                 finally:
-                    try:
-                        os.unlink(chart_path)
-                    except OSError:
-                        pass
+                    # 挂起异步延迟清理任务，取代立即删除
+                    asyncio.create_task(self._delayed_remove_file(chart_path))
 
     @filter.command("icbc_help")
     async def help_cmd(self, event: AstrMessageEvent):
@@ -690,7 +709,7 @@ class ICBCExchangeRatePlugin(Star):
 
         # 所有规则遍历完毕后统一保存一次
         if is_changed:
-            self.save_data()
+            await self.save_data()
 
     async def monitor_loop(self):
         while True:
@@ -699,7 +718,7 @@ class ICBCExchangeRatePlugin(Star):
 
                 if rates:
                     # 采集汇率曲线数据
-                    self._collect_chart_data(rates)
+                    await self._collect_chart_data(rates)
                     # 检查阈值并推送通知
                     await self._check_and_notify_monitors(rates)
 
@@ -722,6 +741,9 @@ class ICBCExchangeRatePlugin(Star):
 
             except asyncio.CancelledError:
                 break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.error(f"汇率监控后台任务网络异常: {e}")
+                await asyncio.sleep(60)
             except Exception as e:
                 logger.error(f"汇率监控后台任务报错: {e}")
                 # 退避补偿：防止异常发生在 sleep 之前导致死循环炸 CPU
@@ -754,6 +776,9 @@ class ICBCExchangeRatePlugin(Star):
 
             except asyncio.CancelledError:
                 break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.error(f"图表推送后台任务网络异常: {e}")
+                await asyncio.sleep(60)
             except Exception as e:
                 logger.error(f"图表推送后台任务报错: {e}")
                 # 退避补偿：防止异常发生在 sleep 之前导致死循环炸 CPU

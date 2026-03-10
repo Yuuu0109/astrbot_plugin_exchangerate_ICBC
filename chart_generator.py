@@ -5,6 +5,7 @@ from datetime import datetime
 import matplotlib
 import matplotlib.dates as mdates
 import matplotlib.font_manager as fm
+import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
@@ -347,29 +348,34 @@ class ExchangeRateChartGenerator:
 
             theme = THEMES.get(theme_name, THEMES["light"])
 
-            # 创建图表 (对象化 API)
-            fig = Figure(figsize=(12, 6))
-            canvas = FigureCanvasAgg(fig)
-            matplotlib.rcParams["axes.unicode_minus"] = False
+            with matplotlib.rc_context({"axes.unicode_minus": False}):
+                # 创建图表 (对象化 API)
+                fig = Figure(figsize=(12, 6))
+                canvas = FigureCanvasAgg(fig)
 
-            ax = fig.add_subplot(111)
+                ax = fig.add_subplot(111)
 
-            # 绘制流水线
-            cls._draw_series(ax, times, buy_prices, sell_prices, theme)
-            cls._apply_theme_and_layout(fig, ax, currency, times, theme, font_dict)
-            cls._add_annotations(ax, times, buy_prices, sell_prices, theme, font_dict)
+                # 绘制流水线
+                cls._draw_series(ax, times, buy_prices, sell_prices, theme)
+                cls._apply_theme_and_layout(fig, ax, currency, times, theme, font_dict)
+                cls._add_annotations(ax, times, buy_prices, sell_prices, theme, font_dict)
 
-            # 保存到临时文件
-            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="icbc_chart_")
-            os.close(fd)
-            canvas.print_figure(
-                tmp_path,
-                dpi=150,
-                bbox_inches="tight",
-                facecolor=fig.get_facecolor(),
-                edgecolor="none",
-            )
-            return tmp_path
+                # 保存到临时文件
+                fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="icbc_chart_")
+                os.close(fd)
+                canvas.print_figure(
+                    tmp_path,
+                    dpi=150,
+                    bbox_inches="tight",
+                    facecolor=fig.get_facecolor(),
+                    edgecolor="none",
+                )
+                
+                # 显式清理图表和引用，防止内存泄漏
+                fig.clf()
+                plt.close(fig)
+                
+                return tmp_path
 
         except Exception as e:
             logger.error(f"生成汇率图表失败: {e}")
