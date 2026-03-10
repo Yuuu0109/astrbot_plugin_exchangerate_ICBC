@@ -2,6 +2,10 @@
 
 ## [1.4.0] - 2026-03-10
 
+### Fixed
+
+- 修复 `icbc_del_buy` 和 `icbc_del_sell` 逻辑相反的问题，修正购汇与结汇的对应关系。
+
 ### Changed
 
 - 重构图表渲染模块：剥离复杂的 matplotlib 绘制以及中文字体加载逻辑至独立的 `chart_generator.py`（ `ExchangeRateChartGenerator` 类 ），使得主程序回归指令监听与任务调度的职责核心。

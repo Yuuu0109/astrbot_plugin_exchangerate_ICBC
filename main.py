@@ -265,14 +265,14 @@ class ICBCExchangeRatePlugin(Star):
 
     @filter.command("icbc_del_buy")
     async def remove_monitor_buy(self, event: AstrMessageEvent, currency: str):
-        """删除特定币种的结汇价监控。用法: /icbc_del_buy 美元"""
-        async for res in self._del_monitor_impl(event, currency, "buy"):
+        """删除特定币种的购汇价监控。用法: /icbc_del_buy 美元"""
+        async for res in self._del_monitor_impl(event, currency, "sell"):
             yield res
 
     @filter.command("icbc_del_sell")
     async def remove_monitor_sell(self, event: AstrMessageEvent, currency: str):
-        """删除特定币种的购汇价监控。用法: /icbc_del_sell 美元"""
-        async for res in self._del_monitor_impl(event, currency, "sell"):
+        """删除特定币种的结汇价监控。用法: /icbc_del_sell 美元"""
+        async for res in self._del_monitor_impl(event, currency, "buy"):
             yield res
 
     async def _del_monitor_impl(self, event, currency, price_type=None):
