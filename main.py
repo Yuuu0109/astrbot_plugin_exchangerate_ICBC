@@ -686,12 +686,13 @@ class ICBCExchangeRatePlugin(Star):
                     or (condition == "低于" and price < threshold)
                 )
 
-                if triggered and not rule.get("last_triggered", False):
+                if triggered:
                     messages.append(
                         f"汇率提醒: {target_rate['currencyCHName']} {type_name}为 {price}，已{condition}设定的阈值 {threshold}！"
                     )
-                    rule["last_triggered"] = True
-                    is_changed = True
+                    if not rule.get("last_triggered", False):
+                        rule["last_triggered"] = True
+                        is_changed = True
                 elif not triggered and rule.get("last_triggered", False):
                     # 汇率回落/升回，重置触发状态
                     rule["last_triggered"] = False
