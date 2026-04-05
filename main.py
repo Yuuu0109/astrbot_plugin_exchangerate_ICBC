@@ -2,12 +2,10 @@ import asyncio
 import json
 import os
 import ssl
-import tempfile
 from datetime import datetime, timedelta
 
 import aiohttp
 import croniter
-from .chart_generator import ExchangeRateChartGenerator
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -16,10 +14,11 @@ from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 
+from .chart_generator import ExchangeRateChartGenerator
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.4.2"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.4.3"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -32,6 +31,7 @@ class ICBCExchangeRatePlugin(Star):
             "chart_data": {},  # currency -> list of {time, buy, sell}
             "chart_auto_send": {},  # userId/groupId -> bool
             "chart_cron": "0 12 * * 1-5",  # 图表推送cron，默认工作日中午12点
+            "price_extremes": {},  # currency -> {"buy_high": {price, time}, "buy_low": {price, time}, "sell_high": {price, time}, "sell_low": {price, time}}
         }
 
         self.monitor_task: asyncio.Task | None = None
@@ -53,7 +53,9 @@ class ICBCExchangeRatePlugin(Star):
             if os.path.exists(self.data_file):
                 with open(self.data_file, encoding="utf-8") as f:
                     file_data = json.load(f)
-                    self.data.update({k: v for k, v in file_data.items() if k in self.data})
+                    self.data.update(
+                        {k: v for k, v in file_data.items() if k in self.data}
+                    )
                 logger.info(f"成功加载汇率监控数据: {self.data_file}")
         except Exception as e:
             logger.error(f"加载汇率监控配置失败: {e}")
@@ -116,7 +118,9 @@ class ICBCExchangeRatePlugin(Star):
                     else:
                         logger.error(f"API请求失败，状态码: {resp.status}")
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                logger.warning(f"获取汇率数据网络异常 (第{attempt}/{max_retries}次): {e}")
+                logger.warning(
+                    f"获取汇率数据网络异常 (第{attempt}/{max_retries}次): {e}"
+                )
                 if self._session and not self._session.closed:
                     await self._session.close()
                 self._session = None
@@ -140,11 +144,15 @@ class ICBCExchangeRatePlugin(Star):
         """在汇率列表中查找匹配的币种，返回匹配的条目或 None。"""
         # 第一遍：精准匹配
         for rate in rates:
-            if currency == rate.get("currencyCHName", "") or currency.upper() == rate.get("currencyENName", ""):
+            if currency == rate.get(
+                "currencyCHName", ""
+            ) or currency.upper() == rate.get("currencyENName", ""):
                 return rate
         # 第二遍：部分匹配
         for rate in rates:
-            if currency in rate.get("currencyCHName", "") or currency.upper() in rate.get("currencyENName", ""):
+            if currency in rate.get(
+                "currencyCHName", ""
+            ) or currency.upper() in rate.get("currencyENName", ""):
                 return rate
         return None
 
@@ -160,9 +168,7 @@ class ICBCExchangeRatePlugin(Star):
         except Exception:
             return 60
 
-
-    @staticmethod
-    def format_rate_info(rate_info: dict) -> str:
+    def format_rate_info(self, rate_info: dict, session_id: str = None) -> str:
         name = rate_info.get("currencyCHName", "")
         code = rate_info.get("currencyENName", "")
         buy = rate_info.get("foreignBuy", "N/A")
@@ -173,7 +179,40 @@ class ICBCExchangeRatePlugin(Star):
             f"{rate_info.get('publishDate', '')} {rate_info.get('publishTime', '')}"
         )
 
-        return f"【{name}({code})】\n结汇价: {buy}  购汇价: {sell}\n现钞买入: {c_buy}  现钞卖出: {c_sell}\n更新时间: {pub_time}"
+        result = f"【{name}({code})】\n结汇价: {buy}  购汇价: {sell}\n现钞买入: {c_buy}  现钞卖出: {c_sell}\n更新时间: {pub_time}"
+
+        # 根据该会话的监控类型决定显示哪些极值
+        if session_id:
+            monitors = self.data.get("monitors", {}).get(session_id, [])
+            has_buy_monitor = any(
+                r["currency"] == name and r.get("type") == "buy" for r in monitors
+            )
+            has_sell_monitor = any(
+                r["currency"] == name and r.get("type") == "sell" for r in monitors
+            )
+
+            price_extremes = self.data.get("price_extremes", {})
+            extremes = price_extremes.get(name, {})
+            if extremes:
+                lines = []
+                if has_buy_monitor:
+                    if extremes.get("buy_high"):
+                        high = extremes["buy_high"]
+                        lines.append(f"结汇价最高: {high['price']} ({high['time']})")
+                    if extremes.get("buy_low"):
+                        low = extremes["buy_low"]
+                        lines.append(f"结汇价最低: {low['price']} ({low['time']})")
+                if has_sell_monitor:
+                    if extremes.get("sell_high"):
+                        high = extremes["sell_high"]
+                        lines.append(f"购汇价最高: {high['price']} ({high['time']})")
+                    if extremes.get("sell_low"):
+                        low = extremes["sell_low"]
+                        lines.append(f"购汇价最低: {low['price']} ({low['time']})")
+                if lines:
+                    result += "\n\n※ 监控历史极值:\n" + "\n".join(lines)
+
+        return result
 
     @filter.command("icbc")
     async def query_rate(self, event: AstrMessageEvent, currency: str = ""):
@@ -186,7 +225,8 @@ class ICBCExchangeRatePlugin(Star):
         if currency:
             matched = self._find_rate_by_currency(rates, currency)
             if matched:
-                yield event.plain_result(self.format_rate_info(matched))
+                session_id = event.unified_msg_origin
+                yield event.plain_result(self.format_rate_info(matched, session_id))
                 return
             yield event.plain_result(f"未找到关于包含 {currency} 的汇率信息。")
         else:
@@ -308,8 +348,11 @@ class ICBCExchangeRatePlugin(Star):
         initial_len = len(monitors[session_id])
         if price_type:
             monitors[session_id] = [
-                r for r in monitors[session_id]
-                if not (r["currency"] == currency and r.get("type", "sell") == price_type)
+                r
+                for r in monitors[session_id]
+                if not (
+                    r["currency"] == currency and r.get("type", "sell") == price_type
+                )
             ]
         else:
             monitors[session_id] = [
@@ -437,7 +480,6 @@ class ICBCExchangeRatePlugin(Star):
         await self.save_data()
         yield event.plain_result(f"已移除 {currency} 的汇率曲线追踪。")
 
-
     @staticmethod
     async def _delayed_remove_file(path: str, delay: int = 60):
         """延迟删除生成的图片文件，避免发送冲突"""
@@ -459,7 +501,9 @@ class ICBCExchangeRatePlugin(Star):
             )
             return
 
-        chart_path = await asyncio.to_thread(ExchangeRateChartGenerator.generate, currency, records)
+        chart_path = await asyncio.to_thread(
+            ExchangeRateChartGenerator.generate, currency, records
+        )
         if chart_path:
             try:
                 yield event.image_result(chart_path)
@@ -576,6 +620,79 @@ class ICBCExchangeRatePlugin(Star):
         self.data["chart_data"] = chart_data
         await self.save_data()
 
+    async def _update_price_extremes(self, rates: list):
+        """更新监控币种的最高最低价，仅针对已添加监控规则的币种"""
+        monitors = self.data.get("monitors", {})
+        if not monitors:
+            return
+
+        # 汇总所有监控的币种
+        monitored_currencies = set()
+        for rules in monitors.values():
+            for rule in rules:
+                monitored_currencies.add(rule["currency"])
+
+        if not monitored_currencies:
+            return
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        price_extremes = self.data.get("price_extremes", {})
+
+        for cur_name in monitored_currencies:
+            target_rate = self._find_rate_by_currency(rates, cur_name)
+            if not target_rate:
+                continue
+
+            try:
+                buy_price = float(target_rate.get("foreignBuy", 0))
+                sell_price = float(target_rate.get("foreignSell", 0))
+            except (ValueError, TypeError):
+                continue
+
+            if cur_name not in price_extremes:
+                price_extremes[cur_name] = {}
+
+            # 更新结汇价(foreignBuy)最高最低
+            if buy_price > 0:
+                if (
+                    "buy_high" not in price_extremes[cur_name]
+                    or buy_price > price_extremes[cur_name]["buy_high"]["price"]
+                ):
+                    price_extremes[cur_name]["buy_high"] = {
+                        "price": buy_price,
+                        "time": now_str,
+                    }
+                if (
+                    "buy_low" not in price_extremes[cur_name]
+                    or buy_price < price_extremes[cur_name]["buy_low"]["price"]
+                ):
+                    price_extremes[cur_name]["buy_low"] = {
+                        "price": buy_price,
+                        "time": now_str,
+                    }
+
+            # 更新购汇价(foreignSell)最高最低
+            if sell_price > 0:
+                if (
+                    "sell_high" not in price_extremes[cur_name]
+                    or sell_price > price_extremes[cur_name]["sell_high"]["price"]
+                ):
+                    price_extremes[cur_name]["sell_high"] = {
+                        "price": sell_price,
+                        "time": now_str,
+                    }
+                if (
+                    "sell_low" not in price_extremes[cur_name]
+                    or sell_price < price_extremes[cur_name]["sell_low"]["price"]
+                ):
+                    price_extremes[cur_name]["sell_low"] = {
+                        "price": sell_price,
+                        "time": now_str,
+                    }
+
+        self.data["price_extremes"] = price_extremes
+        await self.save_data()
+
     async def _auto_send_charts(self):
         """向开启了自动推送的会话发送追踪币种的走势图。"""
         chart_auto_send = self.data.get("chart_auto_send", {})
@@ -595,7 +712,9 @@ class ICBCExchangeRatePlugin(Star):
                 if not records:
                     continue
 
-                chart_path = await asyncio.to_thread(ExchangeRateChartGenerator.generate, currency, records)
+                chart_path = await asyncio.to_thread(
+                    ExchangeRateChartGenerator.generate, currency, records
+                )
                 if not chart_path:
                     continue
 
@@ -681,9 +800,8 @@ class ICBCExchangeRatePlugin(Star):
                 if price <= 0:
                     continue
 
-                triggered = (
-                    (condition == "高于" and price > threshold)
-                    or (condition == "低于" and price < threshold)
+                triggered = (condition == "高于" and price > threshold) or (
+                    condition == "低于" and price < threshold
                 )
 
                 if triggered:
@@ -720,6 +838,8 @@ class ICBCExchangeRatePlugin(Star):
                 if rates:
                     # 采集汇率曲线数据
                     await self._collect_chart_data(rates)
+                    # 更新监控币种的最高最低价
+                    await self._update_price_extremes(rates)
                     # 检查阈值并推送通知
                     await self._check_and_notify_monitors(rates)
 
@@ -735,7 +855,9 @@ class ICBCExchangeRatePlugin(Star):
 
                 sleep_seconds = max(sleep_seconds, 1)
                 try:
-                    await asyncio.wait_for(self._monitor_wakeup.wait(), timeout=sleep_seconds)
+                    await asyncio.wait_for(
+                        self._monitor_wakeup.wait(), timeout=sleep_seconds
+                    )
                     self._monitor_wakeup.clear()
                 except asyncio.TimeoutError:
                     pass
@@ -766,7 +888,9 @@ class ICBCExchangeRatePlugin(Star):
 
                 sleep_seconds = max(sleep_seconds, 1)
                 try:
-                    await asyncio.wait_for(self._chart_wakeup.wait(), timeout=sleep_seconds)
+                    await asyncio.wait_for(
+                        self._chart_wakeup.wait(), timeout=sleep_seconds
+                    )
                     self._chart_wakeup.clear()
                     # 被唤醒说明 cron 配置已变更，重新计算
                     continue
