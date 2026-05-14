@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.4] - 2026-05-14
+
+### Changed
+
+- 图表指令 `/icbc_chart`、`/icbc_chart_add`、`/icbc_chart_del` 现已支持中文名与英文代码两种输入，并统一规范化为中文名存储。([#1](https://github.com/Yuuu0109/astrbot_plugin_exchangerate_ICBC/issues/1))
+
 ## [1.4.3] - 2026-04-05
 
 ### Added

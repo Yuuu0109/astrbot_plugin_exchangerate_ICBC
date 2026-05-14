@@ -18,7 +18,7 @@ from .chart_generator import ExchangeRateChartGenerator
 
 
 @register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.4.3"
+    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.4.4"
 )
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
@@ -154,6 +154,15 @@ class ICBCExchangeRatePlugin(Star):
                 "currencyCHName", ""
             ) or currency.upper() in rate.get("currencyENName", ""):
                 return rate
+        return None
+
+    async def _resolve_currency_name(self, currency: str) -> str | None:
+        rates = await self.fetch_exchange_rates()
+        if not rates:
+            return None
+        matched = self._find_rate_by_currency(rates, currency)
+        if matched:
+            return matched.get("currencyCHName") or None
         return None
 
     @staticmethod
@@ -448,19 +457,27 @@ class ICBCExchangeRatePlugin(Star):
             yield event.plain_result("无法识别当前会话。")
             return
 
+        # 统一规范化为标准中文币种名，确保追踪列表与历史数据命名一致
+        standard_name = await self._resolve_currency_name(currency)
+        if not standard_name:
+            yield event.plain_result(f"未找到关于包含 {currency} 的汇率信息。")
+            return
+
         chart_monitors = self.data.setdefault("chart_monitors", {})
         session_monitors = chart_monitors.setdefault(session_id, [])
 
-        if currency in session_monitors:
-            yield event.plain_result(f"{currency} 已在曲线追踪列表中，无需重复添加。")
+        if standard_name in session_monitors:
+            yield event.plain_result(
+                f"{standard_name} 已在曲线追踪列表中，无需重复添加。"
+            )
             return
 
-        session_monitors.append(currency)
+        session_monitors.append(standard_name)
         await self.save_data()
 
         yield event.plain_result(
-            f"已添加 {currency} 到汇率曲线追踪列表。\n"
-            f"后台将定时采集数据，使用 /icbc_chart {currency} 可查看最近走势图。"
+            f"已添加 {standard_name} 到汇率曲线追踪列表。\n"
+            f"后台将定时采集数据，使用 /icbc_chart {standard_name} 可查看最近走势图。"
         )
 
     @filter.command("icbc_chart_del")
@@ -468,17 +485,24 @@ class ICBCExchangeRatePlugin(Star):
         """删除汇率曲线追踪。用法: /icbc_chart_del 美元"""
         session_id = event.unified_msg_origin
         chart_monitors = self.data.get("chart_monitors", {})
-        if (
-            session_id not in chart_monitors
-            or currency not in chart_monitors[session_id]
-        ):
+        session_list = chart_monitors.get(session_id, [])
+
+        # 优先按用户输入直接匹配，未命中再尝试解析为标准中文名（兼容英文代码输入与历史数据）
+        target_name = currency if currency in session_list else None
+        if target_name is None:
+            standard_name = await self._resolve_currency_name(currency)
+            if standard_name and standard_name in session_list:
+                target_name = standard_name
+
+        if target_name is None:
             yield event.plain_result(f"未找到 {currency} 的曲线追踪记录。")
             return
 
-        chart_monitors[session_id].remove(currency)
+        session_list.remove(target_name)
+        chart_monitors[session_id] = session_list
         self.data["chart_monitors"] = chart_monitors
         await self.save_data()
-        yield event.plain_result(f"已移除 {currency} 的汇率曲线追踪。")
+        yield event.plain_result(f"已移除 {target_name} 的汇率曲线追踪。")
 
     @staticmethod
     async def _delayed_remove_file(path: str, delay: int = 60):
@@ -494,6 +518,16 @@ class ICBCExchangeRatePlugin(Star):
         """查看指定币种的汇率走势图。用法: /icbc_chart 美元"""
         chart_data = self.data.get("chart_data", {})
         records = chart_data.get(currency, [])
+
+        # 直接命中失败时回退到币种名解析，兼容英文代码与中文名混用
+        if not records:
+            standard_name = await self._resolve_currency_name(currency)
+            if standard_name:
+                fallback = chart_data.get(standard_name, [])
+                if fallback:
+                    currency = standard_name
+                    records = fallback
+
         if not records:
             yield event.plain_result(
                 f"暂无 {currency} 的历史数据。\n"
