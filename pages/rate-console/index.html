@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>工行汇率控制台</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="page">
+    <header class="page-head">
+      <div>
+        <p class="eyebrow">工商银行外汇牌价</p>
+        <h1>汇率控制台</h1>
+      </div>
+      <div class="head-actions">
+        <span id="status" class="status is-busy" role="status">正在读取</span>
+        <button id="refresh" class="btn btn-quiet" type="button">刷新</button>
+      </div>
+    </header>
+
+    <section class="session-bar" aria-label="当前会话">
+      <label class="field field-grow" id="session-select-field">
+        <span>会话</span>
+        <select id="session-select"></select>
+      </label>
+      <div class="session-actions">
+        <button id="session-add" class="btn btn-quiet" type="button">添加 UMO</button>
+        <button id="session-refresh" class="btn btn-quiet" type="button">重新扫描</button>
+      </div>
+      <span id="session-hint" class="hint"></span>
+    </section>
+
+    <nav class="tabs" role="tablist" aria-label="功能分区">
+      <button class="tab is-active" role="tab" aria-selected="true" data-panel="panel-rates">实时牌价</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="panel-monitors">监控规则</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="panel-charts">曲线追踪</button>
+    </nav>
+
+    <section id="panel-rates" class="panel is-active" role="tabpanel">
+      <div class="panel-head">
+        <h2>实时牌价</h2>
+        <span id="rates-stamp" class="hint"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th scope="col">币种</th>
+              <th scope="col">代码</th>
+              <th scope="col" class="num">结汇价</th>
+              <th scope="col" class="num">购汇价</th>
+              <th scope="col" class="num">现钞买入</th>
+              <th scope="col" class="num">现钞卖出</th>
+              <th scope="col" class="col-action">操作</th>
+            </tr>
+          </thead>
+          <tbody id="rates-body"></tbody>
+        </table>
+      </div>
+      <p id="rates-empty" class="empty" hidden>暂无牌价数据</p>
+    </section>
+
+    <section id="panel-monitors" class="panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>监控规则</h2>
+        <div class="panel-head-tools">
+          <span id="monitors-count" class="hint"></span>
+          <label class="switch">
+            <input id="only-current-session" type="checkbox">
+            <span>仅看当前会话</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="cron-bar">
+        <label class="cron-bar-field">
+          <span>检查频率</span>
+          <input id="cron-input" placeholder="*/30 * * * *" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="cron-presets cron-presets-inline">
+          <button class="cron-chip" type="button" data-cron-target="cron-input" data-cron="*/30 * * * *">每 30 分钟</button>
+          <button class="cron-chip" type="button" data-cron-target="cron-input" data-cron="0 * * * *">每小时</button>
+          <button class="cron-chip" type="button" data-cron-target="cron-input" data-cron="0 */6 * * *">每 6 小时</button>
+        </div>
+        <button id="cron-apply" class="btn btn-quiet btn-mini" type="button">保存</button>
+      </div>
+
+      <form id="monitor-form" class="row-form">
+        <label class="field">
+          <span>币种</span>
+          <select id="monitor-currency" required>
+            <option value="">加载中…</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>价格</span>
+          <select id="monitor-type">
+            <option value="buy">结汇价</option>
+            <option value="sell">购汇价</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>条件</span>
+          <select id="monitor-condition">
+            <option value="高于">高于</option>
+            <option value="低于">低于</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>阈值</span>
+          <span class="field-inline">
+            <input id="monitor-threshold" type="number" step="0.0001" min="0" placeholder="7.1000" required>
+            <small id="threshold-hint" class="field-hint is-empty">先选择币种</small>
+          </span>
+        </label>
+        <button class="btn btn-primary" type="submit">保存规则</button>
+      </form>
+
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th scope="col">会话</th>
+              <th scope="col">币种</th>
+              <th scope="col">价格</th>
+              <th scope="col">触发条件</th>
+              <th scope="col" class="num">当前牌价</th>
+              <th scope="col" class="num">距触发</th>
+              <th scope="col">状态</th>
+              <th scope="col" class="col-action">操作</th>
+            </tr>
+          </thead>
+          <tbody id="monitors-body"></tbody>
+        </table>
+      </div>
+      <p id="monitors-empty" class="empty" hidden>还没有任何监控规则</p>
+    </section>
+
+    <section id="panel-charts" class="panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>曲线追踪</h2>
+        <div class="panel-head-tools">
+          <span id="charts-count" class="hint"></span>
+          <label class="switch">
+            <input id="charts-only-current" type="checkbox">
+            <span>仅看当前会话</span>
+          </label>
+        </div>
+      </div>
+
+      <form id="chart-form" class="row-form">
+        <label class="field field-grow">
+          <span id="chart-add-label">添加追踪币种</span>
+          <select id="chart-currency" required>
+            <option value="">加载中…</option>
+          </select>
+        </label>
+        <button class="btn btn-primary" type="submit">加入追踪</button>
+        <small id="chart-add-note" class="field-hint is-empty" hidden></small>
+      </form>
+
+      <div class="table-wrap">
+        <table class="grid grid-charts">
+          <thead>
+            <tr>
+              <th scope="col">会话</th>
+              <th scope="col">追踪币种</th>
+              <th scope="col">定时推送</th>
+              <th scope="col">推送时间</th>
+              <th scope="col" class="col-action">操作</th>
+            </tr>
+          </thead>
+          <tbody id="charts-body"></tbody>
+        </table>
+      </div>
+      <p id="charts-empty" class="empty" hidden>还没有任何追踪币种</p>
+
+      <div class="canvas-box">
+        <div class="canvas-head">
+          <h3 id="chart-title">走势图</h3>
+          <span id="chart-meta" class="hint"></span>
+        </div>
+        <canvas id="chart-canvas" width="960" height="360" role="img" aria-label="汇率走势图"></canvas>
+        <p id="chart-empty" class="empty" hidden>点击上方币种查看走势</p>
+      </div>
+    </section>
+
+    <div id="cron-dialog" class="modal" role="dialog" aria-modal="true" aria-labelledby="cron-title" hidden>
+      <div class="modal-panel">
+        <header class="modal-head">
+          <h2 id="cron-title">设置推送时间</h2>
+          <button id="cron-close" class="modal-close" type="button" aria-label="关闭">×</button>
+        </header>
+        <div class="modal-body">
+          <p id="cron-session" class="hint"></p>
+          <div class="cron-presets" id="cron-preset-list"></div>
+          <label class="field">
+            <span>Cron 表达式</span>
+            <input id="cron-dialog-input" placeholder="0 12 * * 1-5" autocomplete="off" spellcheck="false">
+          </label>
+          <p id="cron-dialog-hint" class="hint"></p>
+        </div>
+        <footer class="modal-foot">
+          <button id="cron-reset" class="btn btn-quiet" type="button">恢复默认</button>
+          <button id="cron-cancel" class="btn btn-quiet" type="button">取消</button>
+          <button id="cron-save" class="btn btn-primary" type="button">保存</button>
+        </footer>
+      </div>
+    </div>
+
+    <div id="umo-dialog" class="modal" role="dialog" aria-modal="true" aria-labelledby="umo-title" hidden>
+      <div class="modal-panel">
+        <header class="modal-head">
+          <h2 id="umo-title">添加 UMO</h2>
+          <button id="umo-close" class="modal-close" type="button" aria-label="关闭">×</button>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span>机器人</span>
+            <select id="umo-platform">
+              <option value="">加载中…</option>
+            </select>
+          </label>
+          <label class="field" id="umo-target-field">
+            <span>群组或用户</span>
+            <select id="umo-target"></select>
+          </label>
+          <label class="field" id="umo-manual-field" hidden>
+            <span>UMO</span>
+            <input id="umo-manual" placeholder="机器人:MessageType:会话 ID" autocomplete="off" spellcheck="false">
+          </label>
+          <p id="umo-status" class="hint"></p>
+          <button id="umo-manual-toggle" class="text-button" type="button">手动填写 UMO</button>
+        </div>
+        <footer class="modal-foot">
+          <button id="umo-cancel" class="btn btn-quiet" type="button">取消</button>
+          <button id="umo-confirm" class="btn btn-primary" type="button">添加</button>
+        </footer>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

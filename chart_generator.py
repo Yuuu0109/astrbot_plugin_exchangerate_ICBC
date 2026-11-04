@@ -6,8 +6,8 @@ import matplotlib
 import matplotlib.dates as mdates
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 
 from astrbot.api import logger
 
@@ -35,8 +35,9 @@ THEMES = {
         "sell_color": "#ffb74d",
         "color_green": "#81c784",
         "color_red": "#e57373",
-    }
+    },
 }
+
 
 class ExchangeRateChartGenerator:
     _cached_font_prop = None
@@ -163,21 +164,29 @@ class ExchangeRateChartGenerator:
         ]:
             if has_data and prices:
                 ax.plot(
-                    times, prices, linewidth=2.2, label=label,
-                    color=color, zorder=3, solid_capstyle="round"
+                    times,
+                    prices,
+                    linewidth=2.2,
+                    label=label,
+                    color=color,
+                    zorder=3,
+                    solid_capstyle="round",
                 )
                 ax.fill_between(
-                    times, prices, fill_bottom, alpha=0.08,
-                    color=color, zorder=2
+                    times, prices, fill_bottom, alpha=0.08, color=color, zorder=2
                 )
                 # 最新值标记点 (发光效果)
                 ax.scatter(
-                    [times[-1]], [prices[-1]], color=color, s=80,
-                    zorder=5, edgecolors=bg_color, linewidth=1.5
+                    [times[-1]],
+                    [prices[-1]],
+                    color=color,
+                    s=80,
+                    zorder=5,
+                    edgecolors=bg_color,
+                    linewidth=1.5,
                 )
                 ax.scatter(
-                    [times[-1]], [prices[-1]], color=color, s=200,
-                    zorder=4, alpha=0.12
+                    [times[-1]], [prices[-1]], color=color, s=200, zorder=4, alpha=0.12
                 )
 
     @classmethod
@@ -198,14 +207,17 @@ class ExchangeRateChartGenerator:
             (buy_prices, buy_color, has_buy),
             (sell_prices, sell_color, has_sell),
         ]:
-            if not has_data: continue
+            if not has_data:
+                continue
             valid = [(t, p) for t, p in zip(times, prices) if p > 0]
-            if len(valid) < 2: continue
+            if len(valid) < 2:
+                continue
 
             valid_prices = [p for _, p in valid]
             max_val = max(valid_prices)
             min_val = min(valid_prices)
-            if max_val == min_val: continue
+            if max_val == min_val:
+                continue
 
             max_idx = valid_prices.index(max_val)
             min_idx = valid_prices.index(min_val)
@@ -214,29 +226,54 @@ class ExchangeRateChartGenerator:
 
             # 最高价标注（点上方）
             ax.annotate(
-                f"最高 {max_val:.4f}", xy=(max_time, max_val), xytext=(0, 14),
-                textcoords="offset points", fontproperties=fp_anno, color=color,
-                ha="center", va="bottom",
-                bbox={"boxstyle": "round,pad=0.3", "facecolor": bg_color, "edgecolor": color, "alpha": 0.9, "linewidth": 0.8},
-                zorder=7
+                f"最高 {max_val:.4f}",
+                xy=(max_time, max_val),
+                xytext=(0, 14),
+                textcoords="offset points",
+                fontproperties=fp_anno,
+                color=color,
+                ha="center",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.3",
+                    "facecolor": bg_color,
+                    "edgecolor": color,
+                    "alpha": 0.9,
+                    "linewidth": 0.8,
+                },
+                zorder=7,
             )
 
             # 最低价标注（点下方）
             ax.annotate(
-                f"最低 {min_val:.4f}", xy=(min_time, min_val), xytext=(0, -14),
-                textcoords="offset points", fontproperties=fp_anno, color=color,
-                ha="center", va="top",
-                bbox={"boxstyle": "round,pad=0.3", "facecolor": bg_color, "edgecolor": color, "alpha": 0.9, "linewidth": 0.8},
-                zorder=7
+                f"最低 {min_val:.4f}",
+                xy=(min_time, min_val),
+                xytext=(0, -14),
+                textcoords="offset points",
+                fontproperties=fp_anno,
+                color=color,
+                ha="center",
+                va="top",
+                bbox={
+                    "boxstyle": "round,pad=0.3",
+                    "facecolor": bg_color,
+                    "edgecolor": color,
+                    "alpha": 0.9,
+                    "linewidth": 0.8,
+                },
+                zorder=7,
             )
 
         # 最新值涨跌幅标注
         anno_offsets = [(18, 12), (18, -18)]
-        for idx, (prices, color, has_data) in enumerate([
-            (buy_prices, buy_color, has_buy),
-            (sell_prices, sell_color, has_sell),
-        ]):
-            if not has_data or len(prices) < 1: continue
+        for idx, (prices, color, has_data) in enumerate(
+            [
+                (buy_prices, buy_color, has_buy),
+                (sell_prices, sell_color, has_sell),
+            ]
+        ):
+            if not has_data or len(prices) < 1:
+                continue
             latest = prices[-1]
             first_val = prices[0]
             if first_val > 0:
@@ -250,10 +287,20 @@ class ExchangeRateChartGenerator:
                 c = text_color
 
             ax.annotate(
-                text, xy=(times[-1], latest), xytext=anno_offsets[idx],
-                textcoords="offset points", fontproperties=fp_anno, color=c,
-                bbox={"boxstyle": "round,pad=0.4", "facecolor": bg_color, "edgecolor": c, "alpha": 0.95, "linewidth": 1.2},
-                zorder=6
+                text,
+                xy=(times[-1], latest),
+                xytext=anno_offsets[idx],
+                textcoords="offset points",
+                fontproperties=fp_anno,
+                color=c,
+                bbox={
+                    "boxstyle": "round,pad=0.4",
+                    "facecolor": bg_color,
+                    "edgecolor": c,
+                    "alpha": 0.95,
+                    "linewidth": 1.2,
+                },
+                zorder=6,
             )
 
     @classmethod
@@ -278,9 +325,19 @@ class ExchangeRateChartGenerator:
             spine.set_color(border_color)
             spine.set_linewidth(0.8)
 
-        ax.set_title(f"{currency} 汇率走势", fontproperties=fp_title, color=text_color, pad=20, loc="left")
-        ax.set_xlabel("时间", fontproperties=fp_label, color=text_secondary, labelpad=10)
-        ax.set_ylabel("汇率", fontproperties=fp_label, color=text_secondary, labelpad=10)
+        ax.set_title(
+            f"{currency} 汇率走势",
+            fontproperties=fp_title,
+            color=text_color,
+            pad=20,
+            loc="left",
+        )
+        ax.set_xlabel(
+            "时间", fontproperties=fp_label, color=text_secondary, labelpad=10
+        )
+        ax.set_ylabel(
+            "汇率", fontproperties=fp_label, color=text_secondary, labelpad=10
+        )
 
         # 网格
         ax.grid(True, alpha=0.6, color=grid_color, linestyle="-", linewidth=0.5)
@@ -293,8 +350,12 @@ class ExchangeRateChartGenerator:
 
         # 图例
         ax.legend(
-            prop=fp_legend, facecolor=bg_color, edgecolor=border_color,
-            labelcolor=text_color, loc="upper left", framealpha=0.95
+            prop=fp_legend,
+            facecolor=bg_color,
+            edgecolor=border_color,
+            labelcolor=text_color,
+            loc="upper left",
+            framealpha=0.95,
         )
 
         # X 轴时间格式
@@ -312,16 +373,36 @@ class ExchangeRateChartGenerator:
             label.set_fontproperties(fp_tick)
 
         # 底部数据来源水印
-        fig.text(0.99, 0.01, "数据来源: 中国工商银行", fontproperties=fp_watermark, color=text_secondary, ha="right", va="bottom", alpha=0.4)
-        
+        fig.text(
+            0.99,
+            0.01,
+            "数据来源: 中国工商银行",
+            fontproperties=fp_watermark,
+            color=text_secondary,
+            ha="right",
+            va="bottom",
+            alpha=0.4,
+        )
+
         # 右上角更新时间
         update_time = times[-1].strftime("%Y-%m-%d %H:%M") if times else ""
-        fig.text(0.99, 0.97, f"更新: {update_time}", fontproperties=fp_watermark, color=text_secondary, ha="right", va="top", alpha=0.5)
+        fig.text(
+            0.99,
+            0.97,
+            f"更新: {update_time}",
+            fontproperties=fp_watermark,
+            color=text_secondary,
+            ha="right",
+            va="top",
+            alpha=0.5,
+        )
 
         fig.tight_layout(rect=[0, 0.02, 1, 0.98])
 
     @classmethod
-    def generate(cls, currency: str, records: list, theme_name: str = "light") -> str | None:
+    def generate(
+        cls, currency: str, records: list, theme_name: str = "light"
+    ) -> str | None:
         """根据历史数据生成高质量汇率走势图，返回图片文件路径。"""
         try:
             times, buy_prices, sell_prices = cls._parse_records(records)
@@ -358,7 +439,9 @@ class ExchangeRateChartGenerator:
                 # 绘制流水线
                 cls._draw_series(ax, times, buy_prices, sell_prices, theme)
                 cls._apply_theme_and_layout(fig, ax, currency, times, theme, font_dict)
-                cls._add_annotations(ax, times, buy_prices, sell_prices, theme, font_dict)
+                cls._add_annotations(
+                    ax, times, buy_prices, sell_prices, theme, font_dict
+                )
 
                 # 保存到临时文件
                 fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="icbc_chart_")
@@ -370,11 +453,11 @@ class ExchangeRateChartGenerator:
                     facecolor=fig.get_facecolor(),
                     edgecolor="none",
                 )
-                
+
                 # 显式清理图表和引用，防止内存泄漏
                 fig.clf()
                 plt.close(fig)
-                
+
                 return tmp_path
 
         except Exception as e:

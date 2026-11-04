@@ -11,15 +11,16 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star, StarTools, register
+from astrbot.api.web import error_response, json_response, request
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 
 from .chart_generator import ExchangeRateChartGenerator
 
+PLUGIN_NAME = "astrbot_plugin_exchangerate_icbc"
 
-@register(
-    "astrbot_plugin_exchangerate_icbc", "Yuuu0109", "工商银行汇率监控插件", "1.4.4"
-)
+
+@register(PLUGIN_NAME, "Yuuu0109", "工商银行汇率监控插件", "1.5.0")
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -30,7 +31,8 @@ class ICBCExchangeRatePlugin(Star):
             "chart_monitors": {},  # userId/groupId -> list of currency names
             "chart_data": {},  # currency -> list of {time, buy, sell}
             "chart_auto_send": {},  # userId/groupId -> bool
-            "chart_cron": "0 12 * * 1-5",  # 图表推送cron，默认工作日中午12点
+            "chart_cron": "0 12 * * 1-5",  # 图表推送默认cron，未单独设置的会话使用
+            "chart_cron_by_session": {},  # userId/groupId -> 该会话专属的推送cron
             "price_extremes": {},  # currency -> {"buy_high": {price, time}, "buy_low": {price, time}, "sell_high": {price, time}, "sell_low": {price, time}}
         }
 
@@ -73,6 +75,35 @@ class ICBCExchangeRatePlugin(Star):
         self._session = aiohttp.ClientSession()
         self.monitor_task = asyncio.create_task(self.monitor_loop())
         self.chart_push_task = asyncio.create_task(self.chart_push_loop())
+        self._register_web_apis()
+
+    def _register_web_apis(self):
+        """注册供 Dashboard 插件 WebUI 调用的接口。"""
+        for route, handler, methods, desc in (
+            ("state", self.page_get_state, ["GET"], "获取汇率控制台完整状态"),
+            (
+                "umo-options",
+                self.page_get_umo_options,
+                ["GET"],
+                "列出可选的会话标识（UMO）",
+            ),
+            (
+                "platform-targets",
+                self.page_get_platform_targets,
+                ["GET"],
+                "列出机器人实例及其群组/好友，用于添加 UMO",
+            ),
+            ("rates", self.page_get_rates, ["GET"], "获取工商银行实时牌价"),
+            ("monitors/save", self.page_save_monitor, ["POST"], "新增或更新监控规则"),
+            ("monitors/delete", self.page_delete_monitor, ["POST"], "删除监控规则"),
+            ("charts/add", self.page_chart_add, ["POST"], "添加汇率曲线追踪"),
+            ("charts/delete", self.page_chart_delete, ["POST"], "移除汇率曲线追踪"),
+            ("charts/data", self.page_chart_data, ["GET"], "查询曲线历史数据"),
+            ("settings", self.page_save_settings, ["POST"], "修改轮询与推送设置"),
+        ):
+            self.context.register_web_api(
+                f"/{PLUGIN_NAME}/{route}", handler, methods, desc
+            )
 
     async def terminate(self):
         logger.info("销毁工商银行汇率监控插件...")
@@ -727,14 +758,39 @@ class ICBCExchangeRatePlugin(Star):
         self.data["price_extremes"] = price_extremes
         await self.save_data()
 
-    async def _auto_send_charts(self):
-        """向开启了自动推送的会话发送追踪币种的走势图。"""
+    def _chart_cron_for(self, session_id: str) -> str:
+        """返回某个会话实际生效的走势图推送 cron。
+
+        优先使用该会话单独设置的值，没有设置或值非法时回退到全局默认。
+
+        Args:
+            session_id: 会话标识（UMO）。
+
+        Returns:
+            合法的 cron 表达式。
+        """
+        default_cron = self.data.get("chart_cron", "0 12 * * 1-5")
+        if not croniter.croniter.is_valid(default_cron):
+            default_cron = "0 12 * * 1-5"
+
+        per_session = (self.data.get("chart_cron_by_session") or {}).get(session_id)
+        if isinstance(per_session, str) and croniter.croniter.is_valid(per_session):
+            return per_session
+        return default_cron
+
+    async def _auto_send_charts(self, session_ids=None):
+        """向开启了自动推送的会话发送追踪币种的走势图。
+
+        Args:
+            session_ids: 只推送给这些会话；为 None 时推送给所有已开启的会话。
+        """
         chart_auto_send = self.data.get("chart_auto_send", {})
         chart_monitors = self.data.get("chart_monitors", {})
         chart_data = self.data.get("chart_data", {})
 
-        for session_id, enabled in chart_auto_send.items():
-            if not enabled:
+        targets = session_ids if session_ids is not None else list(chart_auto_send)
+        for session_id in targets:
+            if not chart_auto_send.get(session_id):
                 continue
 
             tracked = chart_monitors.get(session_id, [])
@@ -907,31 +963,56 @@ class ICBCExchangeRatePlugin(Star):
                 await asyncio.sleep(60)
 
     async def chart_push_loop(self):
-        """独立的图表推送后台任务，按 chart_cron 定时执行。"""
+        """独立的图表推送后台任务。
+
+        每个会话可以使用各自的 cron：先算出所有待推送会话的下一个触发时刻，
+        取最近的那个作为休眠时长；到点后只推送给同一时刻到期的会话。
+        """
         while True:
             try:
-                # 先计算到下次触发时间的休眠秒数，确保启动时不会立即推送
-                chart_cron = self.data.get("chart_cron", "0 12 * * 1-5")
-                if not croniter.croniter.is_valid(chart_cron):
-                    chart_cron = "0 12 * * 1-5"
-
                 now = datetime.now()
-                cron = croniter.croniter(chart_cron, now)
-                next_time = cron.get_next(datetime)
-                sleep_seconds = (next_time - now).total_seconds()
+                pending: list[tuple[datetime, str]] = []
+                for session_id, enabled in (
+                    self.data.get("chart_auto_send") or {}
+                ).items():
+                    if not enabled:
+                        continue
+                    if not (self.data.get("chart_monitors") or {}).get(session_id):
+                        continue
+                    try:
+                        next_time = croniter.croniter(
+                            self._chart_cron_for(session_id), now
+                        ).get_next(datetime)
+                    except Exception as e:  # noqa: BLE001 - 单个会话配置异常不应中断调度
+                        logger.warning(f"会话 {session_id} 的推送计划无效: {e}")
+                        continue
+                    pending.append((next_time, session_id))
 
-                sleep_seconds = max(sleep_seconds, 1)
+                if not pending:
+                    # 没有需要推送的会话：等唤醒或定期复查，以便及时接上新增的会话
+                    try:
+                        await asyncio.wait_for(self._chart_wakeup.wait(), timeout=60)
+                        self._chart_wakeup.clear()
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
+                next_time, _ = min(pending, key=lambda item: item[0])
+                sleep_seconds = max((next_time - now).total_seconds(), 1)
                 try:
                     await asyncio.wait_for(
                         self._chart_wakeup.wait(), timeout=sleep_seconds
                     )
                     self._chart_wakeup.clear()
-                    # 被唤醒说明 cron 配置已变更，重新计算
+                    # 被唤醒说明配置已变更，重新计算
                     continue
                 except asyncio.TimeoutError:
                     pass
 
-                await self._auto_send_charts()
+                # 只推送与最近触发时刻一致（同一分钟到期）的会话
+                due = [sid for fire_at, sid in pending if fire_at <= next_time]
+                if due:
+                    await self._auto_send_charts(due)
 
             except asyncio.CancelledError:
                 break
@@ -942,3 +1023,527 @@ class ICBCExchangeRatePlugin(Star):
                 logger.error(f"图表推送后台任务报错: {e}")
                 # 退避补偿：防止异常发生在 sleep 之前导致死循环炸 CPU
                 await asyncio.sleep(60)
+
+    # ========== Dashboard 插件 WebUI 接口 ==========
+
+    async def page_get_state(self):
+        """返回控制台首屏所需的全部配置与统计。"""
+        monitors = self.data.get("monitors", {})
+        chart_monitors = self.data.get("chart_monitors", {})
+        chart_auto_send = self.data.get("chart_auto_send", {})
+        chart_data = self.data.get("chart_data", {})
+        # 只保留形如 platform:MessageType:id 且确实有内容的键，
+        # 避免历史遗留的裸会话 ID（如纯数字）混进下拉与默认选中项
+        sessions = sorted(
+            umo
+            for umo in set(monitors) | set(chart_monitors) | set(chart_auto_send)
+            if isinstance(umo, str)
+            and len(umo.strip().split(":", 2)) == 3
+            and all(umo.strip().split(":", 2))
+            and ((monitors.get(umo) or []) or (chart_monitors.get(umo) or []))
+        )
+        return json_response(
+            {
+                "cron": self.data.get("cron", "*/30 * * * *"),
+                "chart_cron": self.data.get("chart_cron", "0 12 * * 1-5"),
+                "chart_cron_by_session": self.data.get("chart_cron_by_session", {}),
+                "sessions": sessions,
+                "monitors": monitors,
+                "chart_monitors": chart_monitors,
+                "chart_auto_send": chart_auto_send,
+                "chart_points": {
+                    name: len(items) for name, items in chart_data.items()
+                },
+                "price_extremes": self.data.get("price_extremes", {}),
+            }
+        )
+
+    async def page_get_umo_options(self):
+        """返回数据文件中真正配置过内容的会话标识（UMO）。
+
+        只统计「有监控规则」或「有曲线追踪」的会话，空规则列表与格式非法的键
+        （例如缺少冒号的纯用户 ID）会被忽略，保证下拉里只出现有用的会话。
+        """
+        monitors = self.data.get("monitors") or {}
+        chart_monitors = self.data.get("chart_monitors") or {}
+        chart_auto_send = self.data.get("chart_auto_send") or {}
+
+        sessions = []
+        # 两类配置的键合并去重，再按是否有内容过滤
+        for umo in list(monitors) + [k for k in chart_monitors if k not in monitors]:
+            if not isinstance(umo, str):
+                continue
+            parts = umo.strip().split(":", 2)
+            if len(parts) != 3 or not all(parts):
+                continue
+
+            rules = monitors.get(umo) or []
+            charts = chart_monitors.get(umo) or []
+            if not rules and not charts:
+                continue
+
+            sessions.append(
+                {
+                    "umo": umo,
+                    "platform_id": parts[0],
+                    "message_type": parts[1],
+                    "session_id": parts[2],
+                    "rule_count": len(rules),
+                    "chart_count": len(charts),
+                    "auto_send": bool(chart_auto_send.get(umo)),
+                }
+            )
+
+        sessions.sort(key=lambda item: (item["platform_id"], item["session_id"]))
+        return json_response({"sessions": sessions})
+
+    async def page_get_platform_targets(self):
+        """列出可用于新建监控的机器人实例及其群组/好友。
+
+        数据来自三处并合并去重：
+        1. 平台适配器实时返回的群列表与好友列表；
+        2. AstrBot 历史会话中实际出现过的会话；
+        3. 已配置过规则或追踪的会话。
+        """
+        registry: dict[str, dict] = {}
+
+        def entry_for(platform_id: str, display: str = "") -> dict:
+            """取得（或创建）某个机器人实例的登记项。"""
+            item = registry.get(platform_id)
+            if item is None:
+                item = {
+                    "platform_id": platform_id,
+                    "display": display or platform_id,
+                    "targets": {},
+                    "can_query": False,
+                    "errors": [],
+                }
+                registry[platform_id] = item
+            elif display and item["display"] == item["platform_id"]:
+                item["display"] = display
+            return item
+
+        def add_target(
+            item: dict,
+            umo: str,
+            message_type: str,
+            session_id: str,
+            name: str = "",
+        ) -> None:
+            """登记一个可选会话，重名或重复时不产生第二条。"""
+            target = item["targets"].get(umo)
+            if target is None:
+                item["targets"][umo] = {
+                    "umo": umo,
+                    "message_type": message_type,
+                    "session_id": str(session_id),
+                    "name": name,
+                }
+            elif name and not target["name"]:
+                target["name"] = name
+
+        # 1) 平台实例实时返回的群与好友
+        for platform in getattr(self.context.platform_manager, "platform_insts", []):
+            try:
+                meta = platform.meta()
+            except Exception:  # noqa: BLE001 - 单个适配器异常不应影响整体列表
+                continue
+            platform_id = getattr(meta, "id", "") or ""
+            if not platform_id:
+                continue
+            display = (
+                getattr(meta, "adapter_display_name", None)
+                or getattr(meta, "name", "")
+                or platform_id
+            )
+            item = entry_for(platform_id, display)
+
+            get_client = getattr(platform, "get_client", None)
+            if not callable(get_client):
+                continue
+            try:
+                client = get_client()
+            except Exception:  # noqa: BLE001
+                continue
+            call_action = getattr(client, "call_action", None)
+            if not callable(call_action):
+                item["errors"].append("该平台不支持主动调用接口")
+                continue
+
+            # OneBot 反向 WebSocket 在存在多个连接时，必须显式指定 self_id
+            # 才能定位到具体的机器人账号（aiocqhttp 内部按 self_id 索引连接）。
+            self_ids: list[str] = []
+            clients_map = getattr(client, "_wsr_api_clients", None)
+            if isinstance(clients_map, dict):
+                self_ids = [str(key) for key in clients_map if str(key) != "*"]
+            if self_ids:
+                item["can_query"] = True
+                routed = [{"self_id": self_id} for self_id in self_ids]
+            else:
+                # 无法枚举账号（例如 HTTP 上报或其它适配器）时，先不带 self_id 尝试
+                routed = [{}]
+
+            for action, message_type, id_key, name_keys in (
+                ("get_group_list", "GroupMessage", "group_id", ("group_name",)),
+                ("get_friend_list", "FriendMessage", "user_id", ("remark", "nickname")),
+            ):
+                entries: list = []
+                last_error = ""
+                for extra in routed:
+                    try:
+                        result = await call_action(action=action, **extra)
+                    except Exception as e:  # noqa: BLE001 - 记录原因而非吞掉
+                        last_error = f"{type(e).__name__}: {e}"
+                        continue
+                    item["can_query"] = True
+                    if isinstance(result, list):
+                        entries.extend(result)
+
+                if not entries and last_error:
+                    label = "群列表" if action == "get_group_list" else "好友列表"
+                    item["errors"].append(f"获取{label}失败（{last_error}）")
+                    continue
+
+                for raw in entries:
+                    if not isinstance(raw, dict):
+                        continue
+                    session_id = raw.get(id_key)
+                    if session_id in (None, ""):
+                        continue
+                    name = ""
+                    for key in name_keys:
+                        value = raw.get(key)
+                        if isinstance(value, str) and value.strip():
+                            name = value.strip()
+                            break
+                    add_target(
+                        item,
+                        f"{platform_id}:{message_type}:{session_id}",
+                        message_type,
+                        session_id,
+                        name,
+                    )
+
+        # 2) 历史会话中出现过的会话
+        try:
+            (
+                conversations,
+                _,
+            ) = await self.context.conversation_manager.get_filtered_conversations(
+                page=1,
+                page_size=200,
+                include_history=False,
+                group_by_session=True,
+            )
+            for conv in conversations:
+                umo = getattr(conv, "user_id", "")
+                if not isinstance(umo, str):
+                    continue
+                parts = umo.strip().split(":", 2)
+                if len(parts) != 3 or not all(parts):
+                    continue
+                title = getattr(conv, "title", None)
+                add_target(
+                    entry_for(parts[0]),
+                    umo.strip(),
+                    parts[1],
+                    parts[2],
+                    title.strip() if isinstance(title, str) else "",
+                )
+        except Exception as e:  # noqa: BLE001 - 数据库不可用不应阻塞页面
+            logger.warning(f"读取历史会话失败: {e}")
+
+        # 3) 已经配置过规则或追踪的会话
+        for source in ("monitors", "chart_monitors"):
+            for umo in self.data.get(source) or {}:
+                if not isinstance(umo, str):
+                    continue
+                parts = umo.strip().split(":", 2)
+                if len(parts) != 3 or not all(parts):
+                    continue
+                add_target(entry_for(parts[0]), umo.strip(), parts[1], parts[2])
+
+        platforms = []
+        for item in registry.values():
+            targets = sorted(
+                item["targets"].values(),
+                key=lambda t: (t["message_type"], t["name"] or t["session_id"]),
+            )
+            if targets:
+                # 已有可选对象时，仅把失败原因作为补充说明，不阻断选择
+                unavailable = "；".join(item["errors"])
+            elif item["errors"]:
+                unavailable = "；".join(item["errors"])
+            elif item["can_query"]:
+                unavailable = "机器人未返回任何群组或好友"
+            else:
+                unavailable = "该机器人不支持列出群组或好友"
+            platforms.append(
+                {
+                    "platform_id": item["platform_id"],
+                    "display": item["display"],
+                    "targets": targets,
+                    "unavailable": unavailable,
+                }
+            )
+        platforms.sort(key=lambda p: p["platform_id"])
+        return json_response({"platforms": platforms})
+
+    async def page_get_rates(self):
+        """返回工商银行实时牌价原始列表。"""
+        rates = await self.fetch_exchange_rates()
+        if not rates:
+            return error_response("暂时无法获取工商银行牌价，请稍后重试。")
+        return json_response(
+            {
+                "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "rates": [
+                    {
+                        "name": item.get("currencyCHName", ""),
+                        "code": item.get("currencyENName", ""),
+                        "buy": item.get("foreignBuy", ""),
+                        "sell": item.get("foreignSell", ""),
+                        "cash_buy": item.get("cashBuy", ""),
+                        "cash_sell": item.get("cashSell", ""),
+                        "published": (
+                            f"{item.get('publishDate', '')} "
+                            f"{item.get('publishTime', '')}"
+                        ).strip(),
+                    }
+                    for item in rates
+                    if item.get("currencyENName")
+                ],
+            }
+        )
+
+    async def page_save_monitor(self):
+        """新增或更新一条监控规则，返回最新的规则列表。"""
+        payload = await request.json(default={})
+        session_id = str(payload.get("session_id", "")).strip()
+        currency = str(payload.get("currency", "")).strip()
+        price_type = payload.get("type")
+        condition = payload.get("condition")
+
+        if not session_id:
+            return error_response("请先选择或填写会话标识。")
+        if not currency:
+            return error_response("请填写币种名称。")
+        if price_type not in self._PRICE_TYPE_MAP:
+            return error_response("监控类型只能为结汇价或购汇价。")
+        if condition not in ("高于", "低于"):
+            return error_response("条件只能为高于或低于。")
+        try:
+            threshold = float(payload.get("threshold"))
+        except (TypeError, ValueError):
+            return error_response("阈值必须是数字。")
+        if threshold <= 0:
+            return error_response("阈值必须大于 0。")
+
+        rates = await self.fetch_exchange_rates()
+        matched = self._find_rate_by_currency(rates, currency) if rates else None
+        if not matched:
+            return error_response(f"未找到币种「{currency}」的实时牌价，请核对名称。")
+
+        # 统一使用工商银行返回的中文币种名，避免中英文混写产生重复规则
+        currency = matched.get("currencyCHName") or currency
+
+        # 以下修改之间没有 await，内存中的规则列表不会被并发打断
+        session_rules = self.data.setdefault("monitors", {}).setdefault(session_id, [])
+        for rule in session_rules:
+            if (
+                rule["currency"] == currency
+                and rule["condition"] == condition
+                and rule.get("type") == price_type
+            ):
+                rule["threshold"] = threshold
+                rule["last_triggered"] = False
+                action = "更新"
+                break
+        else:
+            session_rules.append(
+                {
+                    "currency": currency,
+                    "condition": condition,
+                    "threshold": threshold,
+                    "type": price_type,
+                    "last_triggered": False,
+                }
+            )
+            action = "添加"
+
+        await self.save_data()
+        logger.info(
+            f"WebUI {action}监控规则: {session_id} {currency} {condition} {threshold}"
+        )
+        return json_response(
+            {
+                "action": action,
+                "currency": currency,
+                "monitors": self.data.get("monitors", {}),
+            }
+        )
+
+    async def page_delete_monitor(self):
+        """删除指定会话下的监控规则，返回删除后的规则列表。"""
+        payload = await request.json(default={})
+        session_id = str(payload.get("session_id", "")).strip()
+        currency = str(payload.get("currency", "")).strip()
+        price_type = payload.get("type")
+
+        if not session_id or not currency:
+            return error_response("缺少会话标识或币种名称。")
+
+        session_rules = self.data.get("monitors", {}).get(session_id, [])
+        remaining = [
+            rule
+            for rule in session_rules
+            if not (
+                rule["currency"] == currency
+                and (price_type is None or rule.get("type") == price_type)
+            )
+        ]
+        if len(remaining) == len(session_rules):
+            return error_response(f"未找到 {currency} 的对应监控规则。")
+
+        self.data.setdefault("monitors", {})[session_id] = remaining
+        await self.save_data()
+        logger.info(f"WebUI 删除监控规则: {session_id} {currency}")
+        return json_response({"monitors": self.data.get("monitors", {})})
+
+    async def page_chart_add(self):
+        """把币种加入曲线追踪列表。"""
+        payload = await request.json(default={})
+        session_id = str(payload.get("session_id", "")).strip()
+        currency = str(payload.get("currency", "")).strip()
+
+        if not session_id:
+            return error_response("请先选择或填写会话标识。")
+        if not currency:
+            return error_response("请填写币种名称。")
+
+        standard_name = await self._resolve_currency_name(currency)
+        if not standard_name:
+            # 牌价接口暂时不可用时，允许继续操作本地已有的币种，
+            # 避免因外部接口故障导致无法管理已追踪的币种
+            known = set(self.data.get("chart_data") or {})
+            known.update(self.data.get("price_extremes") or {})
+            for rules in (self.data.get("monitors") or {}).values():
+                for rule in rules or []:
+                    if rule.get("currency"):
+                        known.add(rule["currency"])
+            for names in (self.data.get("chart_monitors") or {}).values():
+                known.update(names or [])
+
+            if currency in known:
+                standard_name = currency
+            else:
+                return error_response(
+                    f"未找到币种「{currency}」的实时牌价，请核对名称。"
+                )
+
+        session_charts = self.data.setdefault("chart_monitors", {}).setdefault(
+            session_id, []
+        )
+        if standard_name in session_charts:
+            return error_response(f"{standard_name} 已在曲线追踪列表中。")
+
+        session_charts.append(standard_name)
+        await self.save_data()
+        logger.info(f"WebUI 添加曲线追踪: {session_id} {standard_name}")
+        return json_response({"chart_monitors": self.data.get("chart_monitors", {})})
+
+    async def page_chart_delete(self):
+        """把币种移出曲线追踪列表。"""
+        payload = await request.json(default={})
+        session_id = str(payload.get("session_id", "")).strip()
+        currency = str(payload.get("currency", "")).strip()
+
+        if not session_id or not currency:
+            return error_response("缺少会话标识或币种名称。")
+
+        session_charts = self.data.get("chart_monitors", {}).get(session_id, [])
+        target = currency if currency in session_charts else None
+        if target is None:
+            standard_name = await self._resolve_currency_name(currency)
+            if standard_name in session_charts:
+                target = standard_name
+        if target is None:
+            return error_response(f"未找到 {currency} 的曲线追踪记录。")
+
+        session_charts.remove(target)
+        self.data.setdefault("chart_monitors", {})[session_id] = session_charts
+        await self.save_data()
+        logger.info(f"WebUI 移除曲线追踪: {session_id} {target}")
+        return json_response({"chart_monitors": self.data.get("chart_monitors", {})})
+
+    async def page_chart_data(self):
+        """返回指定币种的历史曲线数据点。"""
+        currency = (request.query.get("currency") or "").strip()
+        if not currency:
+            return error_response("缺少币种名称。")
+        records = self.data.get("chart_data", {}).get(currency, [])
+        return json_response({"currency": currency, "records": records})
+
+    async def page_save_settings(self):
+        """修改轮询频率、推送频率与自动推送开关。"""
+        payload = await request.json(default={})
+        changed = []
+
+        if "cron" in payload:
+            cron_expr = str(payload.get("cron", "")).strip().strip('"').strip("'")
+            if not croniter.croniter.is_valid(cron_expr):
+                return error_response("监控轮询的 Cron 表达式不合法。")
+            self.data["cron"] = cron_expr
+            # 唤醒后台任务，让新的 cron 立即生效
+            self._monitor_wakeup.set()
+            changed.append("监控轮询")
+
+        if "chart_cron" in payload and payload.get("session_id"):
+            # 会话级推送时间：传空字符串表示清除覆盖，回退到全局默认
+            session_id = str(payload.get("session_id", "")).strip()
+            if not session_id:
+                return error_response("缺少会话标识。")
+            cron_expr = str(payload.get("chart_cron", "")).strip().strip('"').strip("'")
+            overrides = self.data.setdefault("chart_cron_by_session", {})
+            if not cron_expr:
+                if overrides.pop(session_id, None) is not None:
+                    changed.append("会话推送频率")
+            else:
+                if not croniter.croniter.is_valid(cron_expr):
+                    return error_response("走势图推送的 Cron 表达式不合法。")
+                overrides[session_id] = cron_expr
+                changed.append("会话推送频率")
+            self._chart_wakeup.set()
+        elif "chart_cron" in payload:
+            # 全局默认推送时间
+            cron_expr = str(payload.get("chart_cron", "")).strip().strip('"').strip("'")
+            if not croniter.croniter.is_valid(cron_expr):
+                return error_response("走势图推送的 Cron 表达式不合法。")
+            self.data["chart_cron"] = cron_expr
+            self._chart_wakeup.set()
+            changed.append("走势图默认推送频率")
+
+        if "session_id" in payload and "chart_auto_send" in payload:
+            session_id = str(payload.get("session_id", "")).strip()
+            if not session_id:
+                return error_response("缺少会话标识。")
+            enabled = bool(payload.get("chart_auto_send"))
+            if enabled and not self.data.get("chart_monitors", {}).get(session_id):
+                return error_response("该会话还没有曲线追踪，无法开启自动推送。")
+            self.data.setdefault("chart_auto_send", {})[session_id] = enabled
+            changed.append("自动推送开关")
+
+        if not changed:
+            return error_response("没有需要保存的设置项。")
+
+        await self.save_data()
+        logger.info(f"WebUI 更新设置: {', '.join(changed)}")
+        return json_response(
+            {
+                "changed": changed,
+                "cron": self.data.get("cron", ""),
+                "chart_cron": self.data.get("chart_cron", ""),
+                "chart_cron_by_session": self.data.get("chart_cron_by_session", {}),
+                "chart_auto_send": self.data.get("chart_auto_send", {}),
+            }
+        )

@@ -1,0 +1,899 @@
+:root {
+  --bg: #f5f5f3;
+  --surface: #ffffff;
+  --surface-2: #faf9f7;
+  --line: #e2e0db;
+  --line-strong: #cdcac3;
+  --ink: #1f1e1c;
+  --ink-2: #5c5952;
+  --ink-3: #8a867d;
+  --accent: #2f6f5e;
+  --accent-soft: #e6f0ec;
+  --danger: #a8453a;
+  --danger-soft: #f7e9e7;
+  --radius: 8px;
+  --shadow: 0 1px 2px rgba(31, 30, 28, 0.06);
+}
+
+:root[data-theme="dark"] {
+  --bg: #16181a;
+  --surface: #1e2124;
+  --surface-2: #24282b;
+  --line: #313539;
+  --line-strong: #43484d;
+  --ink: #e8e6e1;
+  --ink-2: #a8a49c;
+  --ink-3: #7c7972;
+  --accent: #6db89f;
+  --accent-soft: #23342f;
+  --danger: #d98a7f;
+  --danger-soft: #352524;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* 类选择器会覆盖浏览器默认的 [hidden]，这里显式保证隐藏生效 */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px 20px 56px;
+}
+
+/* ---------- head ---------- */
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.eyebrow {
+  margin: 0 0 2px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.page-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.status {
+  font-size: 12px;
+  color: var(--ink-3);
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.status.is-busy {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.status.is-error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* ---------- controls ---------- */
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: var(--radius);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.btn:hover {
+  border-color: var(--ink-3);
+}
+
+.btn:active {
+  background: var(--surface-2);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
+}
+
+:root[data-theme="dark"] .btn-primary {
+  color: #10160f;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.08);
+}
+
+/* 表格内删除按钮：常态为安静的文字按钮，悬停才显现危险色 */
+.btn-danger {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+
+.btn-danger:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.btn-danger:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 1px;
+}
+
+.btn-quiet {
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.field > span {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+.field-grow {
+  flex: 1 1 240px;
+}
+
+input,
+select {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  width: 100%;
+  min-width: 0;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+/* 阈值字段：当前价提示横向贴在输入框右侧，不改变整行高度 */
+.field > .field-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+.field-inline > input {
+  flex: 1 1 88px;
+  min-width: 88px;
+  width: auto;
+}
+
+.field-hint {
+  flex: 0 0 auto;
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.field-hint.is-empty {
+  color: var(--ink-3);
+}
+
+.empty {
+  margin: 20px 0;
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+}
+
+/* ---------- session bar ---------- */
+
+.session-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.session-bar .hint {
+  padding-bottom: 7px;
+}
+
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 2px;
+}
+
+#session-select {
+  min-width: 260px;
+}
+
+/* ---------- tabs ---------- */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 20px 0 0;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--ink-3);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.panel {
+  padding-top: 18px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.panel-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.session-cell {
+  font-size: 12px;
+  color: var(--ink-2);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.delta {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+.delta.is-hit {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ---------- table ---------- */
+
+.table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: auto;
+  box-shadow: var(--shadow);
+}
+
+.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.grid th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+}
+
+.grid td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.grid tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.grid tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.grid .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.col-action {
+  text-align: right;
+  width: 1%;
+}
+
+.grid td:last-child {
+  text-align: right;
+}
+
+.code-cell {
+  color: var(--ink-3);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  font-size: 11px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid transparent;
+}
+
+.tag-muted {
+  background: transparent;
+  color: var(--ink-3);
+  border-color: var(--line-strong);
+}
+
+.add-btn {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--ink-2);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+
+.add-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ---------- forms ---------- */
+
+.row-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.stack-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 420px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.stack-form .btn {
+  align-self: flex-start;
+}
+
+.cron-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* 监控规则面板顶部的检查频率行 */
+.cron-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.cron-bar-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cron-bar-field span {
+  font-size: 13px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.cron-bar-field input {
+  width: 150px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.cron-bar .cron-presets-inline {
+  flex-wrap: nowrap;
+}
+
+.cron-presets .btn {
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.switch input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ---------- charts ---------- */
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.chip.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.chip button {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.chip button:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.chip .chip-name {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+/* 曲线追踪表格：币种标签在单元格内可换行 */
+.grid-charts td {
+  white-space: normal;
+  vertical-align: middle;
+}
+
+/* 行内控件统一高度，避免各列参差不齐 */
+.grid-charts {
+  --row-ctl: 26px;
+}
+
+.cell-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.cell-chips .chip {
+  height: var(--row-ctl);
+  padding: 0 4px 0 10px;
+  font-size: 12px;
+}
+
+.grid-charts tr.is-current {
+  background: var(--accent-soft);
+}
+
+.grid-charts tr.is-current:hover {
+  background: var(--accent-soft);
+}
+
+.grid-charts .switch {
+  height: var(--row-ctl);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 操作列需容纳「设置时间」与「全部移除」两个按钮 */
+.grid-charts .col-action,
+.grid-charts th:last-child,
+.grid-charts td:last-child {
+  width: 190px;
+  white-space: nowrap;
+}
+
+/* 会话列：会话 ID 一行，平台/类型与「当前」标记一行 */
+.grid-charts .session-cell {
+  white-space: nowrap;
+  line-height: 1.35;
+}
+
+.grid-charts .session-name {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
+
+.grid-charts .session-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* 每个会话的推送时间：只读展示 + 弹窗配置 */
+.cell-cron {
+  white-space: nowrap;
+}
+
+.cell-cron .cron-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.cell-cron .cron-flag {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.cell-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+/* 表格内的按钮与开关统一到同一高度并垂直居中 */
+.grid-charts .btn-mini,
+.grid-charts .btn-danger {
+  height: var(--row-ctl);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  line-height: 1;
+}
+
+.btn-mini {
+  font-size: 12px;
+}
+
+.cron-chip {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.cron-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.canvas-box {
+  margin-top: 16px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.canvas-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.canvas-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#chart-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 360px;
+}
+
+/* ---------- modal ---------- */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(31, 30, 28, 0.42);
+  z-index: 60;
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal-panel {
+  width: min(440px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal-close {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.modal-close:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.modal-body .hint {
+  margin: 0;
+  min-height: 16px;
+}
+
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.text-button {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.text-button:hover {
+  color: var(--accent);
+}
+
+.text-button[hidden] {
+  display: none;
+}
+
+/* ---------- toast ---------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100vw - 40px));
+  padding: 9px 18px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  background: var(--ink);
+  color: var(--bg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  z-index: 50;
+}
+
+.toast.is-error {
+  background: var(--danger);
+  color: #fff;
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 16px 12px 48px;
+  }
+
+  .grid th,
+  .grid td {
+    padding: 8px 10px;
+  }
+}
