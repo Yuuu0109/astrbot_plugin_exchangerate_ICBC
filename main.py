@@ -18,9 +18,11 @@ from astrbot.core.star.filter.command import GreedyStr
 from .chart_generator import ExchangeRateChartGenerator
 
 PLUGIN_NAME = "astrbot_plugin_exchangerate_icbc"
+# 记录会话 UMO 的上限，超出后按最近活跃顺序淘汰最早的一条
+_KNOWN_SESSION_LIMIT = 500
 
 
-@register(PLUGIN_NAME, "Yuuu0109", "工商银行汇率监控插件", "1.5.0")
+@register(PLUGIN_NAME, "Yuuu0109", "工商银行汇率监控插件", "1.6.0")
 class ICBCExchangeRatePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -34,6 +36,7 @@ class ICBCExchangeRatePlugin(Star):
             "chart_cron": "0 12 * * 1-5",  # 图表推送默认cron，未单独设置的会话使用
             "chart_cron_by_session": {},  # userId/groupId -> 该会话专属的推送cron
             "price_extremes": {},  # currency -> {"buy_high": {price, time}, "buy_low": {price, time}, "sell_high": {price, time}, "sell_low": {price, time}}
+            "known_sessions": {},  # UMO -> 可读名称，记录收到过消息的会话
         }
 
         self.monitor_task: asyncio.Task | None = None
@@ -69,6 +72,50 @@ class ICBCExchangeRatePlugin(Star):
                     json.dump(self.data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存汇率监控配置失败: {e}")
+
+    @staticmethod
+    def _display_name_from_event(event: AstrMessageEvent) -> str:
+        """从入站事件取可读名称：群聊取群名，私聊取发送者名。"""
+        try:
+            group_id = event.get_group_id() or ""
+        except Exception:  # noqa: BLE001 - 取不到会话信息时视为无名
+            group_id = ""
+        if group_id:
+            group = getattr(event.message_obj, "group", None)
+            group_name = getattr(group, "group_name", None) if group else None
+            return group_name.strip() if isinstance(group_name, str) else ""
+        try:
+            sender_name = event.get_sender_name()
+        except Exception:  # noqa: BLE001
+            sender_name = ""
+        return sender_name.strip() if isinstance(sender_name, str) else ""
+
+    async def _remember_umo_alias(self, umo: str, name: str) -> None:
+        """记录会话标识与可读名称，仅在新增或名称变化时写盘。"""
+        known = self.data.setdefault("known_sessions", {})
+        if umo in known and known[umo] == name:
+            return
+        # 重新插入到末尾，让最近活跃的会话排在最后，便于按数量裁剪
+        known.pop(umo, None)
+        known[umo] = name
+        overflow = len(known) - _KNOWN_SESSION_LIMIT
+        if overflow > 0:
+            for stale in list(known)[:overflow]:
+                known.pop(stale, None)
+        await self.save_data()
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def remember_session(self, event: AstrMessageEvent):
+        """记录收到过消息的会话，供 WebUI 选择 UMO。
+
+        QQ 官方机器人的会话 ID 是随机 openid，官方接口无法主动列出群聊，
+        用户先向机器人发一条消息后，插件才能在这里记下该会话。
+        """
+        umo = (event.unified_msg_origin or "").strip()
+        parts = umo.split(":", 2)
+        if len(parts) != 3 or not all(parts):
+            return
+        await self._remember_umo_alias(umo, self._display_name_from_event(event))
 
     async def initialize(self):
         logger.info("初始化工商银行汇率监控插件...")
@@ -1058,6 +1105,33 @@ class ICBCExchangeRatePlugin(Star):
             }
         )
 
+    async def _get_umo_display_names(self) -> dict[str, str]:
+        """返回插件记录的会话与 AstrBot UMO 别名，名称可能为空字符串。
+
+        复用 AstrBot 4.28+ 的 `umo_aliases` 表：通过 `/name` 指令设置或自动
+        记录的别名会覆盖插件自己记下的名称；旧版本没有该表时直接跳过。
+        """
+        names: dict[str, str] = {}
+        for umo, name in (self.data.get("known_sessions") or {}).items():
+            if isinstance(umo, str) and umo:
+                names[umo] = name.strip() if isinstance(name, str) else ""
+
+        try:
+            from astrbot.core.umo_alias import serialize_umo_alias
+
+            aliases = await self.context.get_db().get_umo_aliases()
+        except Exception:  # noqa: BLE001 - 旧版本或数据库不可用时不影响主流程
+            return names
+
+        for alias in aliases or []:
+            umo = getattr(alias, "umo", "")
+            if not isinstance(umo, str) or not umo:
+                continue
+            display = serialize_umo_alias(alias, umo).get("display_name", "").strip()
+            if display and display != umo:
+                names[umo] = display
+        return names
+
     async def page_get_umo_options(self):
         """返回数据文件中真正配置过内容的会话标识（UMO）。
 
@@ -1067,6 +1141,7 @@ class ICBCExchangeRatePlugin(Star):
         monitors = self.data.get("monitors") or {}
         chart_monitors = self.data.get("chart_monitors") or {}
         chart_auto_send = self.data.get("chart_auto_send") or {}
+        display_names = await self._get_umo_display_names()
 
         sessions = []
         # 两类配置的键合并去重，再按是否有内容过滤
@@ -1085,6 +1160,7 @@ class ICBCExchangeRatePlugin(Star):
             sessions.append(
                 {
                     "umo": umo,
+                    "name": display_names.get(umo, ""),
                     "platform_id": parts[0],
                     "message_type": parts[1],
                     "session_id": parts[2],
@@ -1100,10 +1176,11 @@ class ICBCExchangeRatePlugin(Star):
     async def page_get_platform_targets(self):
         """列出可用于新建监控的机器人实例及其群组/好友。
 
-        数据来自三处并合并去重：
+        数据来自四处并合并去重：
         1. 平台适配器实时返回的群列表与好友列表；
-        2. AstrBot 历史会话中实际出现过的会话；
-        3. 已配置过规则或追踪的会话。
+        2. 插件记录过消息的会话与 AstrBot 的 UMO 别名；
+        3. AstrBot 历史会话中实际出现过的会话；
+        4. 已配置过规则或追踪的会话。
         """
         registry: dict[str, dict] = {}
 
@@ -1167,7 +1244,16 @@ class ICBCExchangeRatePlugin(Star):
                 continue
             call_action = getattr(client, "call_action", None)
             if not callable(call_action):
-                item["errors"].append("该平台不支持主动调用接口")
+                if getattr(meta, "name", "") in (
+                    "qq_official",
+                    "qq_official_webhook",
+                ):
+                    item["errors"].append(
+                        "QQ 官方机器人无法列出群聊/好友；请先在目标群 @机器人 "
+                        "或私聊机器人发送一条消息，再点开此对话框"
+                    )
+                else:
+                    item["errors"].append("该平台不支持主动调用接口")
                 continue
 
             # OneBot 反向 WebSocket 在存在多个连接时，必须显式指定 self_id
@@ -1224,7 +1310,16 @@ class ICBCExchangeRatePlugin(Star):
                         name,
                     )
 
-        # 2) 历史会话中出现过的会话
+        # 2) 插件记录过消息的会话与 AstrBot 的 UMO 别名。
+        # QQ 官方机器人的会话 ID 是随机 openid，官方接口无法列出群聊，
+        # 只能等用户先发一条消息，由插件把 UMO 记下来后在这里展示。
+        for umo, name in (await self._get_umo_display_names()).items():
+            parts = umo.strip().split(":", 2)
+            if len(parts) != 3 or not all(parts):
+                continue
+            add_target(entry_for(parts[0]), umo.strip(), parts[1], parts[2], name)
+
+        # 3) 历史会话中出现过的会话
         try:
             (
                 conversations,
@@ -1253,7 +1348,7 @@ class ICBCExchangeRatePlugin(Star):
         except Exception as e:  # noqa: BLE001 - 数据库不可用不应阻塞页面
             logger.warning(f"读取历史会话失败: {e}")
 
-        # 3) 已经配置过规则或追踪的会话
+        # 4) 已经配置过规则或追踪的会话
         for source in ("monitors", "chart_monitors"):
             for umo in self.data.get(source) or {}:
                 if not isinstance(umo, str):
